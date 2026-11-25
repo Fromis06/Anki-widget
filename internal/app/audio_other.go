@@ -1,6 +1,6 @@
 ﻿//go:build !windows
 
-package main
+package app
 
 type audioPlayer struct{}
 

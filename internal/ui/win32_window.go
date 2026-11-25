@@ -1,6 +1,6 @@
-﻿//go:build windows
+//go:build windows
 
-package main
+package ui
 
 import (
 	"runtime"
@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"anki-passive-widget/internal/anki"
+	"anki-passive-widget/internal/app"
 	"anki-passive-widget/internal/config"
 )
 
@@ -63,7 +64,7 @@ type hitRegion struct {
 type loadedImageResult struct {
 	cardID int64
 	src    string
-	dib    *DecodedDIB
+	dib    *app.DecodedDIB
 }
 
 type WidgetWindow struct {
@@ -71,7 +72,7 @@ type WidgetWindow struct {
 	hInstance        uintptr
 	wmShowSecondInst uint32
 	tray             nativeTray
-	ctrl             *Controller
+	ctrl             *app.Controller
 
 	dpi int32
 
@@ -88,9 +89,9 @@ type WidgetWindow struct {
 	visible      bool
 	tab          activeTab
 	card         *anki.ParsedCard
-	frontNodes   []CardNode
-	backNodes    []CardNode
-	progress     DailyProgress
+	frontNodes   []app.CardNode
+	backNodes    []app.CardNode
+	progress     app.DailyProgress
 	errorMsg     string
 	saveMsg      string
 	paused       bool
@@ -113,7 +114,7 @@ type WidgetWindow struct {
 	focus            textFocus
 
 	zoomedSrc    string
-	imageCache   map[string]*DecodedDIB
+	imageCache   map[string]*app.DecodedDIB
 	imageLoading map[string]bool
 
 	// Settings & Theme state
@@ -129,7 +130,7 @@ type WidgetWindow struct {
 	// Thread-safe inbox for background goroutine -> GUI thread updates.
 	inboxMu      sync.Mutex
 	inCard       *anki.ParsedCard
-	inProgress   DailyProgress
+	inProgress   app.DailyProgress
 	inCardErr    string
 	inPaused     bool
 	inDecks      []string
@@ -150,13 +151,13 @@ func NewWidgetWindow() *WidgetWindow {
 	return &WidgetWindow{
 		dpi:          96,
 		secondsLeft:  autoHideSeconds,
-		imageCache:   make(map[string]*DecodedDIB),
+		imageCache:   make(map[string]*app.DecodedDIB),
 		imageLoading: make(map[string]bool),
 		sourceMode:   "sqlite",
 	}
 }
 
-func (w *WidgetWindow) SetController(c *Controller) {
+func (w *WidgetWindow) SetController(c *app.Controller) {
 	w.ctrl = c
 	w.cfg = c.GetConfig()
 	w.draft = c.GetConfig()
@@ -209,7 +210,7 @@ func (w *WidgetWindow) toggleQuickTheme() {
 	}
 }
 
-func (w *WidgetWindow) PostCardLoaded(card *anki.ParsedCard, progress DailyProgress) {
+func (w *WidgetWindow) PostCardLoaded(card *anki.ParsedCard, progress app.DailyProgress) {
 	w.inboxMu.Lock()
 	w.inCard = card
 	w.inProgress = progress
@@ -268,7 +269,7 @@ func (w *WidgetWindow) CreateAndRun() error {
 	regMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(msgName)))
 	w.wmShowSecondInst = uint32(regMsg)
 
-	className, _ := syscall.UTF16PtrFromString(widgetWindowClass)
+	className, _ := syscall.UTF16PtrFromString(WidgetWindowClass)
 	title, _ := syscall.UTF16PtrFromString("Anki Passive Widget")
 	arrowCursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 
@@ -294,7 +295,7 @@ func (w *WidgetWindow) CreateAndRun() error {
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
 		wsPopup|wsClipChildren,
-		0, 0, FrontWidth, FrontHeight,
+		0, 0, app.FrontWidth, app.FrontHeight,
 		0, 0, hInst, 0,
 	)
 	if hwnd == 0 {
@@ -307,7 +308,7 @@ func (w *WidgetWindow) CreateAndRun() error {
 	}
 	w.rebuildFonts()
 	w.applyWindowFrameTheme()
-	w.positionBottomRight(FrontWidth, FrontHeight)
+	w.positionBottomRight(app.FrontWidth, app.FrontHeight)
 	w.tray.init(hwnd, hInst)
 
 	if w.ctrl != nil {
@@ -431,7 +432,7 @@ func (w *WidgetWindow) hideWindowUI() {
 	w.focus = focusNone
 	_, _, _ = procKillTimer.Call(w.hwnd, timerAutoHideID)
 	_, _, _ = procShowWindow.Call(w.hwnd, swHide)
-	w.imageCache = make(map[string]*DecodedDIB)
+	w.imageCache = make(map[string]*app.DecodedDIB)
 	w.imageLoading = make(map[string]bool)
 }
 
@@ -459,8 +460,8 @@ func (w *WidgetWindow) scheduleImagesForCard(card *anki.ParsedCard) {
 		return
 	}
 	cardID := card.CardID
-	for _, n := range append(append([]CardNode(nil), w.frontNodes...), w.backNodes...) {
-		if n.Kind != NodeImage || n.Src == "" {
+	for _, n := range append(append([]app.CardNode(nil), w.frontNodes...), w.backNodes...) {
+		if n.Kind != app.NodeImage || n.Src == "" {
 			continue
 		}
 		if _, ok := w.imageCache[n.Src]; ok || w.imageLoading[n.Src] {
@@ -528,7 +529,7 @@ func (w *WidgetWindow) doReveal() {
 	}
 	w.isRevealed = true
 	w.syncAutoHideTimer()
-	w.showAndPosition(BackWidth, BackHeight, true)
+	w.showAndPosition(app.BackWidth, app.BackHeight, true)
 	if w.cfg.AutoPlayAudio && len(w.card.BackAudio) > 0 {
 		front0 := ""
 		if len(w.card.FrontAudio) > 0 {
@@ -602,7 +603,7 @@ func (w *WidgetWindow) openSettingsTab() {
 	}
 	w.saveMsg = ""
 	w.applyWindowFrameTheme()
-	w.showAndPosition(SettingsWidth, SettingsHeight, true)
+	w.showAndPosition(app.SettingsWidth, app.SettingsHeight, true)
 	w.syncAutoHideTimer()
 	w.triggerRefreshDecks()
 	w.triggerLoadDeckFields(w.draft.SelectedDeck)
@@ -614,9 +615,9 @@ func (w *WidgetWindow) closeSettingsToReview() {
 	w.focus = focusNone
 	w.applyWindowFrameTheme()
 	if w.isRevealed {
-		w.showAndPosition(BackWidth, BackHeight, true)
+		w.showAndPosition(app.BackWidth, app.BackHeight, true)
 	} else {
-		w.showAndPosition(FrontWidth, FrontHeight, true)
+		w.showAndPosition(app.FrontWidth, app.FrontHeight, true)
 	}
 	w.syncAutoHideTimer()
 }
@@ -732,13 +733,13 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 			w.rebuildFonts()
 			if w.visible {
 				if w.tab == tabSettings {
-					w.positionBottomRight(SettingsWidth, SettingsHeight)
+					w.positionBottomRight(app.SettingsWidth, app.SettingsHeight)
 				} else if w.zoomedSrc != "" {
 					w.expandForImage()
 				} else if w.isRevealed {
-					w.positionBottomRight(BackWidth, BackHeight)
+					w.positionBottomRight(app.BackWidth, app.BackHeight)
 				} else {
-					w.positionBottomRight(FrontWidth, FrontHeight)
+					w.positionBottomRight(app.FrontWidth, app.FrontHeight)
 				}
 			}
 			w.redraw()
@@ -883,9 +884,9 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 			if w.zoomedSrc != "" {
 				w.zoomedSrc = ""
 				if w.isRevealed {
-					w.showAndPosition(BackWidth, BackHeight, true)
+					w.showAndPosition(app.BackWidth, app.BackHeight, true)
 				} else {
-					w.showAndPosition(FrontWidth, FrontHeight, true)
+					w.showAndPosition(app.FrontWidth, app.FrontHeight, true)
 				}
 				w.syncAutoHideTimer()
 				return 0
@@ -980,8 +981,8 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 		if card != nil {
 			w.card = card
 			w.progress = prog
-			w.frontNodes = ParseCardHTML(card.FrontHTML)
-			w.backNodes = ParseCardHTML(card.BackHTML)
+			w.frontNodes = app.ParseCardHTML(card.FrontHTML)
+			w.backNodes = app.ParseCardHTML(card.BackHTML)
 			w.errorMsg = ""
 			w.isRevealed = false
 			w.isSubmitting = false
@@ -989,12 +990,12 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 			w.cardScrollY = 0
 			w.tab = tabReview
 			w.secondsLeft = autoHideSeconds
-			w.imageCache = make(map[string]*DecodedDIB)
+			w.imageCache = make(map[string]*app.DecodedDIB)
 			w.imageLoading = make(map[string]bool)
 			w.cfg = w.ctrl.GetConfig()
 			w.sourceMode = card.SourceMode
 			w.applyWindowFrameTheme()
-			w.showAndPosition(FrontWidth, FrontHeight, false)
+			w.showAndPosition(app.FrontWidth, app.FrontHeight, false)
 			w.syncAutoHideTimer()
 			w.scheduleImagesForCard(card)
 			if w.cfg.AutoPlayAudio && len(card.FrontAudio) > 0 {
@@ -1015,7 +1016,7 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 		w.cardScrollY = 0
 		w.secondsLeft = autoHideSeconds
 		w.applyWindowFrameTheme()
-		w.showAndPosition(FrontWidth, FrontHeight, false)
+		w.showAndPosition(app.FrontWidth, app.FrontHeight, false)
 		w.syncAutoHideTimer()
 		return 0
 

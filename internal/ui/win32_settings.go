@@ -1,11 +1,12 @@
 ﻿//go:build windows
 
-package main
+package ui
 
 import (
 	"fmt"
 	"strings"
 
+	"anki-passive-widget/internal/app"
 	"anki-passive-widget/internal/config"
 )
 
@@ -625,7 +626,7 @@ func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyB
 		return
 	}
 
-	opts := FilterDeckOptions(w.decks, w.deckSearch)
+	opts := app.FilterDeckOptions(w.decks, w.deckSearch)
 	rowH := w.dp(24)
 	totalItems := len(opts) + 1
 	totalH := int32(totalItems) * rowH

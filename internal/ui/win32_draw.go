@@ -1,15 +1,17 @@
-﻿//go:build windows
+//go:build windows
 
-package main
+package ui
 
 import (
 	"fmt"
 	"strings"
 	"unsafe"
+
+	"anki-passive-widget/internal/app"
 )
 
 type lineAtom struct {
-	node    CardNode
+	node    app.CardNode
 	text    string
 	ruby    string
 	width   int32
@@ -37,7 +39,7 @@ type textCmd struct {
 
 type dibImgCmd struct {
 	rc  rect
-	dib *DecodedDIB
+	dib *app.DecodedDIB
 }
 
 func (w *WidgetWindow) renderToHDC(hwnd, hdc uintptr) {
@@ -579,7 +581,7 @@ func (w *WidgetWindow) renderReview(c *pixelCanvas, memDC uintptr, cr rect, head
 	}
 }
 
-func (w *WidgetWindow) layoutNodes(hdc uintptr, nodes []CardNode, maxW int32, mainFont, rubyFont uintptr) []layoutLine {
+func (w *WidgetWindow) layoutNodes(hdc uintptr, nodes []app.CardNode, maxW int32, mainFont, rubyFont uintptr) []layoutLine {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -630,9 +632,9 @@ func (w *WidgetWindow) layoutNodes(hdc uintptr, nodes []CardNode, maxW int32, ma
 
 	for _, n := range nodes {
 		switch n.Kind {
-		case NodeBreak:
+		case app.NodeBreak:
 			flushLine(true)
-		case NodeImage:
+		case app.NodeImage:
 			imgW, imgH := maxW, w.dp(90)
 			if dib, ok := w.imageCache[n.Src]; ok && dib != nil && dib.Width > 0 && dib.Height > 0 {
 				maxImgH := w.dp(110)
@@ -648,7 +650,7 @@ func (w *WidgetWindow) layoutNodes(hdc uintptr, nodes []CardNode, maxW int32, ma
 				}
 			}
 			addAtom(lineAtom{node: n, width: imgW, height: imgH, isImage: true})
-		case NodeRuby:
+		case app.NodeRuby:
 			bw, bh := measureTextSize(hdc, mainFont, n.Text)
 			rw, _ := measureTextSize(hdc, rubyFont, n.Ruby)
 			aw := bw
@@ -667,7 +669,7 @@ func (w *WidgetWindow) layoutNodes(hdc uintptr, nodes []CardNode, maxW int32, ma
 				baseH:  bh,
 				rubyH:  rtH,
 			})
-		case NodeText:
+		case app.NodeText:
 			runes := []rune(n.Text)
 			i := 0
 			for i < len(runes) {
@@ -830,9 +832,9 @@ func (w *WidgetWindow) renderZoomOverlay(c *pixelCanvas, memDC uintptr, cr rect,
 	w.drawBtn(c, closeRc, "zoom:close", bg, pal.Border, true, "minimize-2", pal.Ink, "Close", pal.Ink, &texts, func() {
 		w.zoomedSrc = ""
 		if w.isRevealed {
-			w.showAndPosition(BackWidth, BackHeight, true)
+			w.showAndPosition(app.BackWidth, app.BackHeight, true)
 		} else {
-			w.showAndPosition(FrontWidth, FrontHeight, true)
+			w.showAndPosition(app.FrontWidth, app.FrontHeight, true)
 		}
 		w.syncAutoHideTimer()
 	})
@@ -889,9 +891,9 @@ func (w *WidgetWindow) renderZoomOverlay(c *pixelCanvas, memDC uintptr, cr rect,
 		action: func() {
 			w.zoomedSrc = ""
 			if w.isRevealed {
-				w.showAndPosition(BackWidth, BackHeight, true)
+				w.showAndPosition(app.BackWidth, app.BackHeight, true)
 			} else {
-				w.showAndPosition(FrontWidth, FrontHeight, true)
+				w.showAndPosition(app.FrontWidth, app.FrontHeight, true)
 			}
 			w.syncAutoHideTimer()
 		},

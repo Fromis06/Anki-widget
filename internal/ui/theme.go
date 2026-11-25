@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package ui
 
 import (
 	"golang.org/x/sys/windows/registry"

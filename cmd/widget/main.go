@@ -6,12 +6,11 @@ import (
 	"log"
 	"runtime/debug"
 	"syscall"
-	"unsafe"
 
+	"anki-passive-widget/internal/app"
+	"anki-passive-widget/internal/ui"
 	"golang.org/x/sys/windows"
 )
-
-const widgetWindowClass = "AnkiPassiveWidgetWindow"
 
 func main() {
 	debug.SetGCPercent(25)
@@ -23,20 +22,12 @@ func main() {
 		defer windows.CloseHandle(handle)
 	}
 	if err == windows.ERROR_ALREADY_EXISTS {
-		className, _ := syscall.UTF16PtrFromString(widgetWindowClass)
-		existing, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(className)), 0)
-		if existing != 0 {
-			msgName, _ := syscall.UTF16PtrFromString("AnkiPassiveWidgetShowNow")
-			regMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(msgName)))
-			if regMsg != 0 {
-				_, _, _ = procPostMessageW.Call(existing, regMsg, 0, 0)
-			}
-		}
+		ui.ActivateExistingInstance()
 		return
 	}
 
-	win := NewWidgetWindow()
-	ctrl := NewController(win)
+	win := ui.NewWidgetWindow()
+	ctrl := app.NewController(win)
 	win.SetController(ctrl)
 	defer ctrl.Shutdown()
 

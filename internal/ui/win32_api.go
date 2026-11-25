@@ -1,11 +1,13 @@
 ﻿//go:build windows
 
-package main
+package ui
 
 import (
 	"fmt"
 	"syscall"
 	"unsafe"
+
+	"anki-passive-widget/internal/app"
 )
 
 var (
@@ -340,7 +342,7 @@ func drawTextBox(hdc, hFont uintptr, txt string, rc rect, color uint32, flags ui
 	_, _, _ = procSelectObject.Call(hdc, oldFont)
 }
 
-func drawDIBScaled(hdc uintptr, dst rect, dib *DecodedDIB) {
+func drawDIBScaled(hdc uintptr, dst rect, dib *app.DecodedDIB) {
 	if dib == nil || dib.Width <= 0 || dib.Height <= 0 || len(dib.Pixels) == 0 {
 		return
 	}
@@ -420,6 +422,22 @@ func signedHiWord(l uintptr) int32 {
 
 func wheelDelta(w uintptr) int32 {
 	return int32(int16(uint16((w >> 16) & 0xFFFF)))
+}
+
+const WidgetWindowClass = "AnkiPassiveWidgetWindow"
+
+// ActivateExistingInstance brings an already running widget instance to the foreground.
+func ActivateExistingInstance() {
+	className, _ := syscall.UTF16PtrFromString(WidgetWindowClass)
+	existing, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(className)), 0)
+	if existing == 0 {
+		return
+	}
+	msgName, _ := syscall.UTF16PtrFromString("AnkiPassiveWidgetShowNow")
+	regMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(msgName)))
+	if regMsg != 0 {
+		_, _, _ = procPostMessageW.Call(existing, regMsg, 0, 0)
+	}
 }
 
 var _ = fmt.Sprintf

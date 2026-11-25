@@ -6,7 +6,7 @@ Built in Go directly on Win32 (`user32`, `gdi32`, `shell32`, `dwmapi`, `winmm`) 
 
 ## Features
 
-- **Native Win32 UI (No WebView)**: Custom anti-aliased pixel canvas with ClearType text, Windows 11 rounded corners, per-monitor DPI scaling, and embedded Lucide SVG icons (`assets/icons/`).
+- **Native Win32 UI (No WebView)**: Custom anti-aliased pixel canvas with ClearType text, Windows 11 rounded corners, per-monitor DPI scaling, and embedded Lucide SVG icons (`internal/ui/assets/icons/`).
 - **Hybrid Data Source**:
   - **Local SQLite (`collection.anki2`)**: Reads and records reviews directly when Anki Desktop is closed (`usn = -1`, `revlog` entries, `col.mod`, and deck studied counters so AnkiWeb syncs cleanly on next open).
   - **AnkiConnect (`http://127.0.0.1:8765`)**: Automatically used when Anki Desktop is running.
@@ -50,15 +50,15 @@ go install github.com/akavel/rsrc@latest
 ### Build Executable
 
 ```powershell
-.\build-windows.bat
+.\scripts\build-windows.bat
 ```
 
-This generates `rsrc.syso` from `build\windows\icon.ico` and builds `anki-passive-widget.exe` with `-ldflags "-w -s -H windowsgui"`.
+This generates `cmd\widget\rsrc.syso` from `build\windows\icon.ico` and builds `anki-passive-widget.exe` with `-ldflags "-w -s -H windowsgui"` from `./cmd/widget`.
 
 ### Package Release Archive
 
 ```powershell
-.\package-windows.bat
+.\scripts\package-windows.bat
 ```
 
 This builds `anki-passive-widget.exe` and creates a portable zip archive at `dist\anki-passive-widget-windows-amd64.zip`.
@@ -76,21 +76,31 @@ Note: Direct local SQLite write/profile tests require Anki Desktop to be closed 
 
 ```text
 .
-├── assets/icons/           # Embedded Lucide SVG icons
-├── build/windows/icon.ico  # Windows application icon
+├── .gitignore
+├── README.md
+├── go.mod
+├── go.sum
+├── build/
+│   ├── appicon.png
+│   └── windows/icon.ico
+├── cmd/widget/
+│   ├── main.go                 # Single-instance entry point and GC/memory configuration
+│   └── main_other.go
 ├── internal/
-│   ├── anki/               # AnkiConnect client, SQLite store, HTML/template parser
-│   └── config/             # User configuration load/save and profile discovery
-├── canvas_dib.go           # Anti-aliased DIB canvas and toggle/slider drawing
-├── controller.go           # Hybrid Anki controller, scheduler, prefetching, daily stats
-├── deck_tree.go            # Hierarchical :: deck tree builder and search filter
-├── icons.go                # SVG path parser and 4x4 SSAA icon rasterizer
-├── main.go                 # Single-instance entry point and GC/memory configuration
-├── parser.go               # Sanitized card HTML node parser (<br/>, <ruby>, <img>)
-├── theme.go                # Light/Dark palettes and Windows theme registry lookup
-├── tray_windows.go         # Native shell32 system tray icon and popup menu
-├── win32_api.go            # Win32 user32/gdi32/dwmapi/kernel32 bindings
-├── win32_draw.go           # Review card layout, image zoom, and GDI text/image blit
-├── win32_settings.go       # Settings view and searchable deck picker overlay
-└── win32_window.go         # Win32 message loop, DPI scaling, shortcuts, and mouse input
+│   ├── anki/                   # AnkiConnect client, SQLite store, HTML/template parser
+│   ├── app/                    # Controller, scheduler, HTML node parser, deck tree, media helpers
+│   ├── config/                 # User configuration load/save and profile discovery
+│   └── ui/
+│       ├── assets/icons/       # Embedded Lucide SVG icons
+│       ├── canvas_dib.go       # Anti-aliased DIB canvas and toggle/slider drawing
+│       ├── icons.go            # SVG path parser and 4x4 SSAA icon rasterizer
+│       ├── theme.go            # Light/Dark palettes and Windows theme registry lookup
+│       ├── tray_windows.go     # Native shell32 system tray icon and popup menu
+│       ├── win32_api.go        # Win32 user32/gdi32/dwmapi/kernel32 bindings
+│       ├── win32_draw.go       # Review card layout, image zoom, and GDI text/image blit
+│       ├── win32_settings.go   # Settings view and searchable deck picker overlay
+│       └── win32_window.go     # Win32 message loop, DPI scaling, shortcuts, and mouse input
+└── scripts/
+    ├── build-windows.bat       # Embed icon resource and build Windows GUI binary
+    └── package-windows.bat     # Build and package portable zip archive in dist/
 ```
