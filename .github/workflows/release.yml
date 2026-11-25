@@ -1,0 +1,55 @@
+name: Release Windows Binary
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test -v ./...
+
+      - name: Install rsrc
+        run: |
+          go install github.com/akavel/rsrc@latest
+          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows executable
+        run: |
+          rsrc -ico build\windows\icon.ico -o cmd\widget\rsrc.syso
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -ldflags "-w -s -H windowsgui" -o dist\anki-passive-widget-windows-amd64.exe ./cmd/widget
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anki-passive-widget-windows-amd64
+          path: dist/anki-passive-widget-windows-amd64.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/anki-passive-widget-windows-amd64.exe
+          generate_release_notes: true

@@ -22,8 +22,8 @@ Built in Go directly on Win32 (`user32`, `gdi32`, `shell32`, `dwmapi`, `winmm`) 
 
 ### Running the Portable App
 
-1. Download and extract `anki-passive-widget-windows-amd64.zip` from Releases (or build locally).
-2. Run `anki-passive-widget.exe`.
+1. Download `anki-passive-widget-windows-amd64.exe` from Releases (or build locally).
+2. Run `anki-passive-widget-windows-amd64.exe`.
 3. Right-click the tray icon and open **Settings** to pick your Anki profile, target deck, display fields, interval (`1–60 min`), and theme (`System`, `Light`, `Dark`).
 
 Configuration is stored in `%USERPROFILE%\.anki-passive-widget\config.json`.
