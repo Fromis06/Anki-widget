@@ -1,0 +1,23 @@
+# Binaries and build artifacts
+*.exe
+*.syso
+*.dll
+*.out
+dist/
+release/
+build/bin/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
