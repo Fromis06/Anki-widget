@@ -16,6 +16,10 @@ const (
 	MinIntervalMinutes     = 1
 	MaxIntervalMinutes     = 60
 	DefaultAnkiEndpoint    = "http://127.0.0.1:8765"
+
+	StudyModeBoth = "both"
+	StudyModeDue  = "due"
+	StudyModeNew  = "new"
 )
 
 // ProfileInfo describes a discovered local Anki user profile directory.
@@ -35,6 +39,7 @@ type DeckFieldSelection struct {
 type Config struct {
 	SelectedProfile   string                        `json:"selectedProfile"`
 	SelectedDeck      string                        `json:"selectedDeck"`
+	StudyMode         string                        `json:"studyMode"`
 	DeckFields        map[string]DeckFieldSelection `json:"deckFields,omitempty"`
 	Theme             string                        `json:"theme"`
 	IntervalMinutes   int                           `json:"intervalMinutes"`
@@ -44,6 +49,8 @@ type Config struct {
 	AnkiEndpoint      string                        `json:"ankiEndpoint"`
 	DailyDate         string                        `json:"dailyDate"`
 	DailyInitialTotal int                           `json:"dailyInitialTotal"`
+	DailyInitialDue   int                           `json:"dailyInitialDue"`
+	DailyInitialNew   int                           `json:"dailyInitialNew"`
 }
 
 var fileMu sync.RWMutex
@@ -52,6 +59,7 @@ var fileMu sync.RWMutex
 func DefaultConfig() *Config {
 	cfg := &Config{
 		SelectedDeck:    "",
+		StudyMode:       StudyModeBoth,
 		Theme:           "system",
 		IntervalMinutes: DefaultIntervalMinutes,
 		AutoPlayAudio:   true,
@@ -65,6 +73,12 @@ func DefaultConfig() *Config {
 
 // Normalize clamps and populates invalid or empty configuration values.
 func (c *Config) Normalize() {
+	switch strings.ToLower(strings.TrimSpace(c.StudyMode)) {
+	case StudyModeDue, StudyModeNew, StudyModeBoth:
+		c.StudyMode = strings.ToLower(strings.TrimSpace(c.StudyMode))
+	default:
+		c.StudyMode = StudyModeBoth
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Theme)) {
 	case "light", "dark", "system":
 		c.Theme = strings.ToLower(strings.TrimSpace(c.Theme))
@@ -86,6 +100,12 @@ func (c *Config) Normalize() {
 	}
 	if c.DailyInitialTotal < 0 {
 		c.DailyInitialTotal = 0
+	}
+	if c.DailyInitialDue < 0 {
+		c.DailyInitialDue = 0
+	}
+	if c.DailyInitialNew < 0 {
+		c.DailyInitialNew = 0
 	}
 	if strings.TrimSpace(c.SelectedProfile) == "" {
 		if profiles, err := DiscoverProfiles(); err == nil && len(profiles) > 0 {

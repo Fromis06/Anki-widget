@@ -553,8 +553,35 @@ func deckMatchesScope(cardDeck, selectedDeck string) bool {
 	return cardDeck == target || strings.HasPrefix(cardDeck, target+"::")
 }
 
+func normalizeStudyMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "due":
+		return "due"
+	case "new":
+		return "new"
+	default:
+		return "both"
+	}
+}
+
+func containsCardID(ids []int64, target int64) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
 // FetchNextCardWithFields fetches the next due/new card and renders user-selected Front/Back fields if provided.
 func (c *Client) FetchNextCardWithFields(selectedDeck string, frontFields, backFields []string) (*ParsedCard, error) {
+	return c.FetchNextCardWithOptions(selectedDeck, frontFields, backFields, "both")
+}
+
+// FetchNextCardWithOptions fetches the next card matching studyMode ("due", "new", or "both")
+// and renders user-selected Front/Back fields if provided.
+func (c *Client) FetchNextCardWithOptions(selectedDeck string, frontFields, backFields []string, studyMode string) (*ParsedCard, error) {
+	mode := normalizeStudyMode(studyMode)
 	scope := ""
 	if strings.TrimSpace(selectedDeck) != "" {
 		scope = fmt.Sprintf(`deck:"%s" `, escapeQueryValue(selectedDeck))
@@ -572,19 +599,25 @@ func (c *Client) FetchNextCardWithFields(selectedDeck string, frontFields, backF
 		hasStats   bool
 		fetchGroup sync.WaitGroup
 	)
-	fetchGroup.Add(5)
-	go func() {
-		defer fetchGroup.Done()
-		learnIDs, _ = c.FindCards(scope + "is:learn is:due -is:suspended")
-	}()
-	go func() {
-		defer fetchGroup.Done()
-		dueIDs, dueErr = c.FindCards(scope + "is:due -is:suspended")
-	}()
-	go func() {
-		defer fetchGroup.Done()
-		newIDs, newErr = c.FindCards(scope + "is:new -is:suspended")
-	}()
+	if mode != "new" {
+		fetchGroup.Add(2)
+		go func() {
+			defer fetchGroup.Done()
+			learnIDs, _ = c.FindCards(scope + "is:learn is:due -is:suspended")
+		}()
+		go func() {
+			defer fetchGroup.Done()
+			dueIDs, dueErr = c.FindCards(scope + "is:due -is:suspended")
+		}()
+	}
+	if mode != "due" {
+		fetchGroup.Add(1)
+		go func() {
+			defer fetchGroup.Done()
+			newIDs, newErr = c.FindCards(scope + "is:new -is:suspended")
+		}()
+	}
+	fetchGroup.Add(2)
 	go func() {
 		defer fetchGroup.Done()
 		cappedDue, cappedNew, hasStats = c.fetchSchedulerCounts(selectedDeck)
@@ -602,15 +635,32 @@ func (c *Client) FetchNextCardWithFields(selectedDeck string, frontFields, backF
 		return nil, newErr
 	}
 
-	remainingDue := len(dueIDs)
-	remainingNew := len(newIDs)
-	if hasStats {
-		remainingDue = cappedDue
-		remainingNew = cappedNew
+	remainingDue := 0
+	remainingNew := 0
+	if mode != "new" {
+		remainingDue = len(dueIDs)
+		if hasStats {
+			remainingDue = cappedDue
+		}
+	}
+	if mode != "due" {
+		remainingNew = len(newIDs)
+		if hasStats {
+			remainingNew = cappedNew
+		}
 	}
 
 	totalRemaining := remainingDue + remainingNew
-	if totalRemaining == 0 || (len(learnIDs) == 0 && len(dueIDs) == 0 && len(newIDs) == 0) {
+	hasEligible := false
+	switch mode {
+	case "due":
+		hasEligible = len(learnIDs) > 0 || len(dueIDs) > 0
+	case "new":
+		hasEligible = len(newIDs) > 0
+	default:
+		hasEligible = len(learnIDs) > 0 || len(dueIDs) > 0 || len(newIDs) > 0
+	}
+	if totalRemaining == 0 || !hasEligible {
 		return &ParsedCard{
 			DeckName:       selectedDeck,
 			RemainingDue:   0,
@@ -620,30 +670,68 @@ func (c *Client) FetchNextCardWithFields(selectedDeck string, frontFields, backF
 		}, nil
 	}
 
+	guiMatchesScope := guiCard != nil && guiCard.CardID > 0 && deckMatchesScope(guiCard.DeckName, selectedDeck)
+	guiInDue := guiMatchesScope && (containsCardID(learnIDs, guiCard.CardID) || containsCardID(dueIDs, guiCard.CardID))
+	guiInNew := guiMatchesScope && containsCardID(newIDs, guiCard.CardID)
+
 	var chosenID int64
 	isDue := false
-	switch {
-	case guiCard != nil && guiCard.CardID > 0 && deckMatchesScope(guiCard.DeckName, selectedDeck):
-		chosenID = guiCard.CardID
-		isDue = true
-	case remainingDue > 0 && len(learnIDs) > 0:
-		chosenID = learnIDs[0]
-		isDue = true
-	case remainingDue > 0 && len(dueIDs) > 0:
-		chosenID = dueIDs[0]
-		isDue = true
-	case remainingNew > 0 && len(newIDs) > 0:
-		chosenID = newIDs[0]
+	switch mode {
+	case "due":
+		switch {
+		case guiInDue:
+			chosenID = guiCard.CardID
+			isDue = true
+		case remainingDue > 0 && len(learnIDs) > 0:
+			chosenID = learnIDs[0]
+			isDue = true
+		case remainingDue > 0 && len(dueIDs) > 0:
+			chosenID = dueIDs[0]
+			isDue = true
+		case len(learnIDs) > 0:
+			chosenID = learnIDs[0]
+			isDue = true
+		default:
+			chosenID = dueIDs[0]
+			isDue = true
+		}
+	case "new":
+		if guiInNew {
+			chosenID = guiCard.CardID
+		} else {
+			chosenID = newIDs[0]
+		}
 		isDue = false
-	case len(learnIDs) > 0:
-		chosenID = learnIDs[0]
-		isDue = true
-	case len(dueIDs) > 0:
-		chosenID = dueIDs[0]
-		isDue = true
 	default:
-		chosenID = newIDs[0]
-		isDue = false
+		switch {
+		case guiInDue:
+			chosenID = guiCard.CardID
+			isDue = true
+		case guiInNew:
+			chosenID = guiCard.CardID
+			isDue = false
+		case guiMatchesScope:
+			chosenID = guiCard.CardID
+			isDue = true
+		case remainingDue > 0 && len(learnIDs) > 0:
+			chosenID = learnIDs[0]
+			isDue = true
+		case remainingDue > 0 && len(dueIDs) > 0:
+			chosenID = dueIDs[0]
+			isDue = true
+		case remainingNew > 0 && len(newIDs) > 0:
+			chosenID = newIDs[0]
+			isDue = false
+		case len(learnIDs) > 0:
+			chosenID = learnIDs[0]
+			isDue = true
+		case len(dueIDs) > 0:
+			chosenID = dueIDs[0]
+			isDue = true
+		default:
+			chosenID = newIDs[0]
+			isDue = false
+		}
 	}
 
 	cards, err := c.CardsInfo([]int64{chosenID})
