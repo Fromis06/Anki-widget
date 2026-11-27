@@ -772,6 +772,13 @@ func SQLiteGetDeckFields(collectionPath string, selectedDeck string) (*DeckField
 
 // SQLiteFetchNextCardWithFields fetches the next due/new card and renders user-selected Front/Back fields if provided.
 func SQLiteFetchNextCardWithFields(collectionPath string, selectedDeck string, frontFields, backFields []string) (*ParsedCard, error) {
+	return SQLiteFetchNextCardWithOptions(collectionPath, selectedDeck, frontFields, backFields, "both")
+}
+
+// SQLiteFetchNextCardWithOptions fetches the next card matching studyMode ("due", "new", or "both")
+// and renders user-selected Front/Back fields if provided.
+func SQLiteFetchNextCardWithOptions(collectionPath string, selectedDeck string, frontFields, backFields []string, studyMode string) (*ParsedCard, error) {
+	mode := normalizeStudyMode(studyMode)
 	db, err := openSQLite(collectionPath, true)
 	if err != nil {
 		return nil, err
@@ -841,6 +848,13 @@ func SQLiteFetchNextCardWithFields(collectionPath string, selectedDeck string, f
 	}
 
 	remainingDue := remainingLrn + remainingRev
+	if mode == "due" {
+		remainingNew = 0
+	} else if mode == "new" {
+		remainingDue = 0
+		remainingRev = 0
+		remainingLrn = 0
+	}
 	totalRemaining := remainingDue + remainingNew
 	if totalRemaining == 0 {
 		return &ParsedCard{
@@ -871,23 +885,25 @@ func SQLiteFetchNextCardWithFields(collectionPath string, selectedDeck string, f
 	inAll, allArgs := buildInClause(matchingIDs)
 
 	// 1. Ready learning/relearning cards (due <= nowSec for intra-day queue=1, due <= today for inter-day queue=3)
-	lrnArgs := append([]interface{}{nowSec, today}, allArgs...)
-	if err = db.QueryRow(
-		fmt.Sprintf(
-			`SELECT id, nid, did, ord FROM cards
-			 WHERE ((queue = 1 AND due <= ?) OR (queue = 3 AND due <= ?)) AND did IN %s
-			 ORDER BY due ASC, id ASC
-			 LIMIT 1`,
-			inAll,
-		),
-		lrnArgs...,
-	).Scan(&cardID, &noteID, &cardDeckID, &cardOrd); err == nil {
-		isDue = true
-		found = true
+	if mode != "new" {
+		lrnArgs := append([]interface{}{nowSec, today}, allArgs...)
+		if err = db.QueryRow(
+			fmt.Sprintf(
+				`SELECT id, nid, did, ord FROM cards
+				 WHERE ((queue = 1 AND due <= ?) OR (queue = 3 AND due <= ?)) AND did IN %s
+				 ORDER BY due ASC, id ASC
+				 LIMIT 1`,
+				inAll,
+			),
+			lrnArgs...,
+		).Scan(&cardID, &noteID, &cardDeckID, &cardOrd); err == nil {
+			isDue = true
+			found = true
+		}
 	}
 
 	// 2. Due review cards (respecting daily deck/ancestor review quotas)
-	if !found && remainingRev > 0 && len(eligibleRevIDs) > 0 {
+	if !found && mode != "new" && remainingRev > 0 && len(eligibleRevIDs) > 0 {
 		inRev, revArgs := buildInClause(eligibleRevIDs)
 		qArgs := append([]interface{}{today}, revArgs...)
 		if err = db.QueryRow(
@@ -906,7 +922,7 @@ func SQLiteFetchNextCardWithFields(collectionPath string, selectedDeck string, f
 	}
 
 	// 3. New cards (respecting daily deck/ancestor new quotas)
-	if !found && remainingNew > 0 && len(eligibleNewIDs) > 0 {
+	if !found && mode != "due" && remainingNew > 0 && len(eligibleNewIDs) > 0 {
 		inNew, newArgs := buildInClause(eligibleNewIDs)
 		if err = db.QueryRow(
 			fmt.Sprintf(
@@ -924,7 +940,7 @@ func SQLiteFetchNextCardWithFields(collectionPath string, selectedDeck string, f
 	}
 
 	// 4. Learn-ahead fallback (queue=1 due within collapseTime) when no other cards are ready
-	if !found {
+	if !found && mode != "new" {
 		aheadArgs := append([]interface{}{nowSec + collapseTime}, allArgs...)
 		if err = db.QueryRow(
 			fmt.Sprintf(

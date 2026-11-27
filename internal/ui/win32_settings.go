@@ -4,6 +4,7 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"anki-passive-widget/internal/app"
@@ -44,7 +45,7 @@ func (w *WidgetWindow) renderSettingsLayered(c *pixelCanvas, memDC uintptr, cr r
 	startY := y
 
 	// --- Group 1: General ---
-	g1H := w.dp(146)
+	g1H := w.dp(178)
 	g1Rc := rect{Left: pad, Top: y, Right: pad + cardW, Bottom: y + g1H}
 	c.drawRoundedBox(g1Rc, float64(w.dp(10)), pal.Surface, pal.Border, true)
 
@@ -183,13 +184,53 @@ func (w *WidgetWindow) renderSettingsLayered(c *pixelCanvas, memDC uintptr, cr r
 			id: "sett:deckBtn", rc: clampRect(deckBtnRc, bodyTop, bodyBot), cursor: hitCursorHand,
 			action: func() {
 				w.deckDropdownOpen = !w.deckDropdownOpen
+				w.studyDropdownOpen = false
 				w.deckSearch = ""
 				w.deckScrollY = 0
 				if w.deckDropdownOpen {
+					w.deckExpanded = make(map[string]bool)
+					for _, anc := range app.DeckAncestorPaths(w.draft.SelectedDeck) {
+						w.deckExpanded[anc] = true
+					}
 					w.focus = focusDeckSearch
 				} else {
 					w.focus = focusNone
 				}
+				w.redraw()
+			},
+		})
+	}
+	g1Y += w.dp(32)
+
+	// Study Mode dropdown
+	texts = append(texts, textCmd{font: w.fontTiny, txt: "Study", rc: rect{Left: pad + inPad, Top: g1Y, Right: pad + w.dp(74), Bottom: g1Y + w.dp(24)}, color: pal.TextSecondary.win32(), flags: dtLeft | dtVCenter | dtSingleLine})
+	studyBtnRc := rect{Left: pad + w.dp(84), Top: g1Y, Right: pad + cardW - inPad, Bottom: g1Y + w.dp(24)}
+	w.studyBtnRc = studyBtnRc
+	stFill := pal.SurfaceSubtle
+	stBdr := pal.Border
+	if w.hoverID == "sett:studyBtn" || w.studyDropdownOpen {
+		stFill = pal.SurfaceHover
+	}
+	if w.studyDropdownOpen {
+		stBdr = pal.Ink
+	}
+	c.drawRoundedBox(studyBtnRc, float64(w.dp(6)), stFill, stBdr, true)
+	drawStudyModeBadge(c, studyBtnRc.Left+w.dp(8), studyBtnRc.Top+(studyBtnRc.Height()-w.dp(5))/2, w.dp(14), w.dp(5), w.draft.StudyMode, pal, stFill)
+	c.drawLucideIcon("chevron-down", studyBtnRc.Right-w.dp(18), studyBtnRc.Top+(studyBtnRc.Height()-w.dp(12))/2, w.dp(12), pal.TextSecondary)
+	texts = append(texts, textCmd{
+		font:  w.fontTiny,
+		txt:   studyModeLabel(w.draft.StudyMode),
+		rc:    rect{Left: studyBtnRc.Left + w.dp(28), Top: studyBtnRc.Top, Right: studyBtnRc.Right - w.dp(20), Bottom: studyBtnRc.Bottom},
+		color: pal.Ink.win32(),
+		flags: dtLeft | dtVCenter | dtSingleLine | dtEndEllipsis,
+	})
+	if studyBtnRc.Bottom > bodyTop && studyBtnRc.Top < bodyBot {
+		w.hits = append(w.hits, hitRegion{
+			id: "sett:studyBtn", rc: clampRect(studyBtnRc, bodyTop, bodyBot), cursor: hitCursorHand,
+			action: func() {
+				w.studyDropdownOpen = !w.studyDropdownOpen
+				w.deckDropdownOpen = false
+				w.focus = focusNone
 				w.redraw()
 			},
 		})
@@ -297,31 +338,62 @@ func (w *WidgetWindow) renderSettingsLayered(c *pixelCanvas, memDC uintptr, cr r
 	if w.hoverID == "sett:intPlus" {
 		pBg = pal.SurfaceHover
 	}
-	w.drawBtn(c, minusRc, "sett:intMinus", mBg, pal.Border, true, "minus", pal.Ink, "", pal.Ink, &texts, func() {
-		if w.draft.IntervalMinutes > 1 {
-			w.draft.IntervalMinutes--
-			w.redraw()
-		}
-	})
-	w.drawBtn(c, plusRc, "sett:intPlus", pBg, pal.Border, true, "plus", pal.Ink, "", pal.Ink, &texts, func() {
-		if w.draft.IntervalMinutes < 60 {
-			w.draft.IntervalMinutes++
-			w.redraw()
-		}
-	})
+	c.drawRoundedBox(minusRc, float64(w.dp(8)), mBg, pal.Border, true)
+	c.drawLucideIcon("minus", minusRc.Left+(minusRc.Width()-w.dp(13))/2, minusRc.Top+(minusRc.Height()-w.dp(13))/2, w.dp(13), pal.Ink)
+	if minusRc.Bottom > bodyTop && minusRc.Top < bodyBot {
+		w.hits = append(w.hits, hitRegion{
+			id: "sett:intMinus", rc: clampRect(minusRc, bodyTop, bodyBot), cursor: hitCursorHand,
+			action: func() {
+				if w.draft.IntervalMinutes > config.MinIntervalMinutes {
+					w.draft.IntervalMinutes--
+					w.redraw()
+				}
+			},
+		})
+	}
+	c.drawRoundedBox(plusRc, float64(w.dp(8)), pBg, pal.Border, true)
+	c.drawLucideIcon("plus", plusRc.Left+(plusRc.Width()-w.dp(13))/2, plusRc.Top+(plusRc.Height()-w.dp(13))/2, w.dp(13), pal.Ink)
+	if plusRc.Bottom > bodyTop && plusRc.Top < bodyBot {
+		w.hits = append(w.hits, hitRegion{
+			id: "sett:intPlus", rc: clampRect(plusRc, bodyTop, bodyBot), cursor: hitCursorHand,
+			action: func() {
+				if w.draft.IntervalMinutes < config.MaxIntervalMinutes {
+					w.draft.IntervalMinutes++
+					w.redraw()
+				}
+			},
+		})
+	}
 
 	trackX := minusRc.Right + w.dp(10)
 	trackW := plusRc.Left - w.dp(10) - trackX
 	trackH := w.dp(4)
 	trackY := g3Y + (w.dp(22)-trackH)/2
-	c.drawRoundedBox(rect{Left: trackX, Top: trackY, Right: trackX + trackW, Bottom: trackY + trackH}, float64(trackH)/2.0, pal.ProgressTrack, pal.ProgressTrack, false)
-	fillPct := ((w.draft.IntervalMinutes - 1) * 100) / 59
-	knobX := trackX + (trackW*int32(fillPct))/100
+	w.intervalTrackRc = rect{Left: trackX, Top: trackY, Right: trackX + trackW, Bottom: trackY + trackH}
+	c.drawRoundedBox(w.intervalTrackRc, float64(trackH)/2.0, pal.ProgressTrack, pal.ProgressTrack, false)
+	span := float64(config.MaxIntervalMinutes - config.MinIntervalMinutes)
+	knobX := trackX + int32(math.Round(float64(w.draft.IntervalMinutes-config.MinIntervalMinutes)*float64(trackW)/span))
 	if knobX > trackX+2 {
 		c.drawRoundedBox(rect{Left: trackX, Top: trackY, Right: knobX, Bottom: trackY + trackH}, float64(trackH)/2.0, pal.Ink, pal.Ink, false)
 	}
-	c.fillCircle(float64(knobX), float64(trackY+trackH/2), float64(w.dp(6)), pal.Ink)
-	c.fillCircle(float64(knobX), float64(trackY+trackH/2), float64(w.dp(3)), pal.InkInverse)
+	knobOuterR := float64(w.dp(6))
+	knobInnerR := float64(w.dp(3))
+	if w.draggingInterval || w.hoverID == "sett:intTrack" {
+		knobOuterR = float64(w.dp(7))
+		knobInnerR = float64(w.dp(3))
+	}
+	knobCY := float64(trackY) + float64(trackH)/2.0
+	c.fillCircle(float64(knobX), knobCY, knobOuterR, pal.Ink)
+	c.fillCircle(float64(knobX), knobCY, knobInnerR, pal.InkInverse)
+	sliderHitRc := rect{Left: trackX - w.dp(6), Top: g3Y, Right: trackX + trackW + w.dp(6), Bottom: g3Y + w.dp(22)}
+	if sliderHitRc.Bottom > bodyTop && sliderHitRc.Top < bodyBot {
+		w.hits = append(w.hits, hitRegion{
+			id: "sett:intTrack", rc: clampRect(sliderHitRc, bodyTop, bodyBot), cursor: hitCursorHand,
+			action: func() {
+				w.beginIntervalDrag(w.lastMouseX)
+			},
+		})
+	}
 	g3Y += w.dp(30)
 
 	c.hline(fieldLeft, fieldRight, g3Y, pal.Divider)
@@ -334,6 +406,7 @@ func (w *WidgetWindow) renderSettingsLayered(c *pixelCanvas, memDC uintptr, cr r
 	g3Y += w.dp(2)
 	g3Y = w.drawSwitchRow(c, pal, fieldLeft, fieldRight, g3Y, bodyTop, bodyBot, "sett:onlyDue", "Due Decks Only", w.draft.OnlyDueDecks, &texts, func() {
 		w.draft.OnlyDueDecks = !w.draft.OnlyDueDecks
+		w.triggerRefreshDecks()
 		w.redraw()
 	})
 	g3Y += w.dp(4)
@@ -358,6 +431,7 @@ func (w *WidgetWindow) renderSettingsLayered(c *pixelCanvas, memDC uintptr, cr r
 			action: func() {
 				w.focus = focusEndpoint
 				w.deckDropdownOpen = false
+				w.studyDropdownOpen = false
 				w.redraw()
 			},
 		})
@@ -438,9 +512,11 @@ func (w *WidgetWindow) renderSettingsLayered(c *pixelCanvas, memDC uintptr, cr r
 		drawTextBox(memDC, t.font, t.txt, t.rc, t.color, t.flags)
 	}
 
-	// Optional Layer 2: Hierarchical Searchable Deck Dropdown Overlay
+	// Optional Layer 2: Floating Dropdown Overlays
 	if w.deckDropdownOpen {
 		w.renderDeckDropdown(memDC, cr, bodyTop, bodyBot, pal)
+	} else if w.studyDropdownOpen {
+		w.renderStudyDropdown(memDC, cr, bodyTop, bodyBot, pal)
 	}
 }
 
@@ -583,6 +659,131 @@ func (w *WidgetWindow) drawSwitchRow(c *pixelCanvas, pal ThemePalette, left, rig
 	return y + h
 }
 
+func studyModeLabel(mode string) string {
+	switch mode {
+	case config.StudyModeDue:
+		return "Due Only"
+	case config.StudyModeNew:
+		return "New Only"
+	default:
+		return "Due + New"
+	}
+}
+
+func drawStudyModeBadge(c *pixelCanvas, x, y, w, h int32, mode string, pal ThemePalette, bgCol rgba) {
+	rc := rect{Left: x, Top: y, Right: x + w, Bottom: y + h}
+	switch mode {
+	case config.StudyModeDue:
+		c.drawSingleProgressBar(rc, pal.ProgressDueFill, pal.ProgressDueFill, 1.0)
+	case config.StudyModeNew:
+		c.drawSingleProgressBar(rc, pal.ProgressNewFill, pal.ProgressNewFill, 1.0)
+	default:
+		c.drawDualProgressBar(rc, 0.5, pal.ProgressDueFill, pal.ProgressDueFill, 1.0, pal.ProgressNewFill, pal.ProgressNewFill, 1.0, bgCol)
+	}
+}
+
+func (w *WidgetWindow) renderStudyDropdown(memDC uintptr, cr rect, bodyTop, bodyBot int32, pal ThemePalette) {
+	// Backdrop shield closes dropdown when clicking anywhere outside the menu.
+	w.hits = append(w.hits, hitRegion{
+		id: "study:backdrop", rc: rect{Left: 0, Top: bodyTop, Right: cr.Width(), Bottom: bodyBot}, cursor: hitCursorArrow,
+		action: func() {
+			w.studyDropdownOpen = false
+			w.redraw()
+		},
+	})
+
+	opts := []struct {
+		key   string
+		label string
+	}{
+		{config.StudyModeBoth, "Due + New"},
+		{config.StudyModeDue, "Due Only"},
+		{config.StudyModeNew, "New Only"},
+	}
+
+	rowH := w.dp(28)
+	padY := w.dp(4)
+	menuH := int32(len(opts))*rowH + padY*2
+	menuLeft := w.studyBtnRc.Left
+	menuRight := w.studyBtnRc.Right
+	if menuRight <= menuLeft {
+		menuLeft = w.dp(94)
+		menuRight = cr.Width() - w.dp(22)
+	}
+	menuTop := w.studyBtnRc.Bottom + w.dp(4)
+	if menuTop+menuH > bodyBot-w.dp(4) {
+		menuTop = w.studyBtnRc.Top - w.dp(4) - menuH
+	}
+	if menuTop < bodyTop+w.dp(4) {
+		menuTop = bodyTop + w.dp(4)
+	}
+	menuRc := rect{Left: menuLeft, Top: menuTop, Right: menuRight, Bottom: menuTop + menuH}
+	mw, mh := menuRc.Width(), menuRc.Height()
+	if mw <= 0 || mh <= 0 {
+		return
+	}
+
+	w.hits = append(w.hits, hitRegion{id: "study:shield", rc: menuRc, cursor: hitCursorArrow, action: func() {}})
+
+	w.overlayCanvas = ensurePixelCanvas(w.overlayCanvas, int(mw), int(mh))
+	ov := w.overlayCanvas
+	ov.clear(pal.CanvasBg)
+	ov.drawRoundedBox(rect{Left: 0, Top: 0, Right: mw, Bottom: mh}, float64(w.dp(8)), pal.Surface, pal.BorderStrong, true)
+
+	curMode := w.draft.StudyMode
+	if curMode == "" {
+		curMode = config.StudyModeBoth
+	}
+
+	var menuTexts []textCmd
+	for i, opt := range opts {
+		key := opt.key
+		ry := padY + int32(i)*rowH
+		relRow := rect{Left: w.dp(4), Top: ry, Right: mw - w.dp(4), Bottom: ry + rowH}
+		absRow := rect{Left: menuRc.Left + relRow.Left, Top: menuRc.Top + relRow.Top, Right: menuRc.Left + relRow.Right, Bottom: menuRc.Top + relRow.Bottom}
+
+		selected := curMode == key
+		rowBg := pal.Surface
+		txtColor := pal.Ink
+		if selected {
+			rowBg = pal.RowSelectedBg
+			txtColor = pal.RowSelectedFg
+			ov.drawRoundedBox(relRow, float64(w.dp(5)), rowBg, rowBg, false)
+		} else if w.hoverID == "study:opt:"+key {
+			rowBg = pal.SurfaceSubtle
+			ov.drawRoundedBox(relRow, float64(w.dp(5)), rowBg, rowBg, false)
+		}
+
+		drawStudyModeBadge(ov, relRow.Left+w.dp(8), relRow.Top+(rowH-w.dp(5))/2, w.dp(14), w.dp(5), key, pal, rowBg)
+		if selected {
+			ov.drawLucideIcon("check", relRow.Right-w.dp(19), relRow.Top+(rowH-w.dp(12))/2, w.dp(12), txtColor)
+		}
+		menuTexts = append(menuTexts, textCmd{
+			font:  w.fontTiny,
+			txt:   opt.label,
+			rc:    rect{Left: absRow.Left + w.dp(28), Top: absRow.Top, Right: absRow.Right - w.dp(24), Bottom: absRow.Bottom},
+			color: txtColor.win32(),
+			flags: dtLeft | dtVCenter | dtSingleLine,
+		})
+
+		w.hits = append(w.hits, hitRegion{
+			id:     "study:opt:" + key,
+			rc:     absRow,
+			cursor: hitCursorHand,
+			action: func() {
+				w.draft.StudyMode = key
+				w.studyDropdownOpen = false
+				w.redraw()
+			},
+		})
+	}
+
+	ov.flushToHDC(memDC, menuRc.Left, menuRc.Top, 0, 0, mw, mh)
+	for _, t := range menuTexts {
+		drawTextBox(memDC, t.font, t.txt, t.rc, t.color, t.flags)
+	}
+}
+
 func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyBot int32, pal ThemePalette) {
 	pad := w.dp(14)
 	dropRc := rect{Left: pad, Top: bodyTop + w.dp(8), Right: cr.Width() - pad, Bottom: bodyBot - w.dp(8)}
@@ -591,9 +792,20 @@ func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyB
 		return
 	}
 
-	w.hits = append(w.hits, hitRegion{id: "drop:shield", rc: dropRc, cursor: hitCursorArrow, action: func() {}})
+	w.hits = append(w.hits,
+		hitRegion{
+			id: "drop:backdrop", rc: rect{Left: 0, Top: bodyTop, Right: cr.Width(), Bottom: bodyBot}, cursor: hitCursorArrow,
+			action: func() {
+				w.deckDropdownOpen = false
+				w.focus = focusNone
+				w.redraw()
+			},
+		},
+		hitRegion{id: "drop:shield", rc: dropRc, cursor: hitCursorArrow, action: func() {}},
+	)
 
-	ov := newPixelCanvas(int(dw), int(dh))
+	w.overlayCanvas = ensurePixelCanvas(w.overlayCanvas, int(dw), int(dh))
+	ov := w.overlayCanvas
 	ov.clear(pal.CanvasBg)
 	ov.drawRoundedBox(rect{Left: 0, Top: 0, Right: dw, Bottom: dh}, float64(w.dp(10)), pal.Surface, pal.BorderStrong, true)
 
@@ -626,7 +838,16 @@ func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyB
 		return
 	}
 
-	opts := app.FilterDeckOptions(w.decks, w.deckSearch)
+	isSearching := strings.TrimSpace(w.deckSearch) != ""
+	opts := app.VisibleDeckOptions(w.decks, w.deckExpanded, w.deckSearch)
+	hasTree := false
+	for _, d := range w.decks {
+		if strings.Contains(d, "::") {
+			hasTree = true
+			break
+		}
+	}
+
 	rowH := w.dp(24)
 	totalItems := len(opts) + 1
 	totalH := int32(totalItems) * rowH
@@ -639,32 +860,40 @@ func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyB
 		w.deckScrollY = maxScr
 	}
 
+	rowRightRel := dw - w.dp(6)
+	if maxScr > 0 {
+		rowRightRel = dw - w.dp(11)
+	}
+
+	ov.setClipY(listTopRel, listBotRel)
 	var listTexts []textCmd
-	paintRow := func(idx int, fullName, label string, depth int) {
+	toggleSlotW := w.dp(18)
+	if !hasTree {
+		toggleSlotW = 0
+	}
+
+	paintRow := func(idx int, fullName, label string, depth int, hasSubdeck bool) {
 		ry := listTopRel + int32(idx)*rowH - w.deckScrollY
 		if ry+rowH <= listTopRel || ry >= listBotRel {
 			return
 		}
-		relRow := rect{Left: w.dp(6), Top: ry, Right: dw - w.dp(6), Bottom: ry + rowH}
+		relRow := rect{Left: w.dp(6), Top: ry, Right: rowRightRel, Bottom: ry + rowH}
 		selected := w.draft.SelectedDeck == fullName
 		txtColor := pal.Ink
 		if selected {
 			ov.drawRoundedBox(relRow, float64(w.dp(5)), pal.RowSelectedBg, pal.RowSelectedBg, false)
 			txtColor = pal.RowSelectedFg
-		} else if w.hoverID == "drop:item:"+fullName {
+		} else if w.hoverID == "drop:item:"+fullName || w.hoverID == "drop:toggle:"+fullName {
 			ov.drawRoundedBox(relRow, float64(w.dp(5)), pal.SurfaceSubtle, pal.SurfaceSubtle, false)
 		}
+
 		absRow := rect{Left: dropRc.Left + relRow.Left, Top: dropRc.Top + relRow.Top, Right: dropRc.Left + relRow.Right, Bottom: dropRc.Top + relRow.Bottom}
-		indent := w.dp(8) + int32(depth)*w.dp(12)
-		if absRow.Top >= dropRc.Top+listTopRel && absRow.Bottom <= dropRc.Top+listBotRel {
-			listTexts = append(listTexts, textCmd{
-				font:  w.fontTiny,
-				txt:   label,
-				rc:    rect{Left: absRow.Left + indent, Top: absRow.Top, Right: absRow.Right - w.dp(8), Bottom: absRow.Bottom},
-				color: txtColor.win32(),
-				flags: dtLeft | dtVCenter | dtSingleLine | dtEndEllipsis,
-			})
+		baseIndent := w.dp(6) + int32(depth)*w.dp(14)
+		textLeftOffset := baseIndent + toggleSlotW
+		if !hasTree {
+			textLeftOffset = w.dp(8) + int32(depth)*w.dp(12)
 		}
+
 		chosen := fullName
 		w.hits = append(w.hits, hitRegion{
 			id:     "drop:item:" + chosen,
@@ -678,11 +907,78 @@ func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyB
 				w.redraw()
 			},
 		})
+
+		if hasSubdeck {
+			tSz := w.dp(18)
+			relTog := rect{
+				Left:   relRow.Left + baseIndent - w.dp(2),
+				Top:    ry + (rowH-tSz)/2,
+				Right:  relRow.Left + baseIndent - w.dp(2) + tSz,
+				Bottom: ry + (rowH+tSz)/2,
+			}
+			togHover := !isSearching && w.hoverID == "drop:toggle:"+chosen
+			if togHover && !selected {
+				ov.drawRoundedBox(relTog, float64(w.dp(4)), pal.SurfaceHover, pal.SurfaceHover, false)
+			}
+			iconName := "chevron-right"
+			if isSearching || w.deckExpanded[chosen] {
+				iconName = "chevron-down"
+			}
+			iconTint := pal.TextSecondary
+			if selected {
+				iconTint = txtColor
+			} else if togHover {
+				iconTint = pal.Ink
+			}
+			iSz := w.dp(11)
+			ov.drawLucideIcon(iconName, relTog.Left+(relTog.Width()-iSz)/2, relTog.Top+(relTog.Height()-iSz)/2, iSz, iconTint)
+
+			if !isSearching {
+				absTog := rect{
+					Left:   dropRc.Left + relTog.Left,
+					Top:    dropRc.Top + relTog.Top,
+					Right:  dropRc.Left + relTog.Right,
+					Bottom: dropRc.Top + relTog.Bottom,
+				}
+				w.hits = append(w.hits, hitRegion{
+					id:     "drop:toggle:" + chosen,
+					rc:     clampRect(absTog, dropRc.Top+listTopRel, dropRc.Top+listBotRel),
+					cursor: hitCursorHand,
+					action: func() {
+						if w.deckExpanded == nil {
+							w.deckExpanded = make(map[string]bool)
+						}
+						w.deckExpanded[chosen] = !w.deckExpanded[chosen]
+						w.redraw()
+					},
+				})
+			}
+		}
+
+		listTexts = append(listTexts, textCmd{
+			font:  w.fontTiny,
+			txt:   label,
+			rc:    rect{Left: absRow.Left + textLeftOffset, Top: absRow.Top, Right: absRow.Right - w.dp(8), Bottom: absRow.Bottom},
+			color: txtColor.win32(),
+			flags: dtLeft | dtVCenter | dtSingleLine | dtEndEllipsis,
+		})
 	}
 
-	paintRow(0, "", "All Decks", 0)
+	paintRow(0, "", "All Decks", 0, false)
 	for i, opt := range opts {
-		paintRow(i+1, opt.FullName, opt.Label, opt.Depth)
+		paintRow(i+1, opt.FullName, opt.Label, opt.Depth, opt.HasSubdeck)
+	}
+	ov.resetClipY()
+
+	if maxScr > 0 && totalH > 0 {
+		sbW := w.dp(3)
+		sbX := dw - sbW - w.dp(4)
+		thumbH := (listH * listH) / totalH
+		if thumbH < w.dp(18) {
+			thumbH = w.dp(18)
+		}
+		thumbY := listTopRel + ((listH - thumbH) * w.deckScrollY / maxScr)
+		ov.drawRoundedBox(rect{Left: sbX, Top: thumbY, Right: sbX + sbW, Bottom: thumbY + thumbH}, float64(sbW)/2.0, pal.BorderStrong, pal.BorderStrong, false)
 	}
 
 	ov.flushToHDC(memDC, dropRc.Left, dropRc.Top, 0, 0, dw, dh)
@@ -697,9 +993,12 @@ func (w *WidgetWindow) renderDeckDropdown(memDC uintptr, cr rect, bodyTop, bodyB
 	}
 	drawTextBox(memDC, w.fontTiny, sTxt, rect{Left: absSearch.Left + w.dp(24), Top: absSearch.Top, Right: absSearch.Right - w.dp(6), Bottom: absSearch.Bottom}, sClr.win32(), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
 
+	savedDC, _, _ := procSaveDC.Call(memDC)
+	_, _, _ = procIntersectClipRect.Call(memDC, uintptr(dropRc.Left), uintptr(dropRc.Top+listTopRel), uintptr(dropRc.Right), uintptr(dropRc.Top+listBotRel))
 	for _, t := range listTexts {
 		drawTextBox(memDC, t.font, t.txt, t.rc, t.color, t.flags)
 	}
+	_, _, _ = procRestoreDC.Call(memDC, savedDC)
 }
 
 func clampRect(rc rect, minY, maxY int32) rect {

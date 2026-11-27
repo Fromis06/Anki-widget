@@ -34,6 +34,12 @@ type DailyProgress struct {
 	InitialTotal int
 	Remaining    int
 	Completed    int
+	InitialDue   int
+	RemainingDue int
+	CompletedDue int
+	InitialNew   int
+	RemainingNew int
+	CompletedNew int
 }
 
 // UIHooks receives controller state updates on background goroutines (window posts messages to its GUI thread).
@@ -61,16 +67,19 @@ type Controller struct {
 	snoozeTimer      *time.Timer
 	paused           bool
 	widgetVisible    bool
-	currentCard      *anki.ParsedCard
-	cardShownAt      time.Time
-	prefetchedCard   *anki.ParsedCard
-	prefetchDeck     string
-	prefetchProfile  string
-	prefetchColPath  string
-	prefetchColMod   time.Time
-	lastRemaining    int
-	hasLastRemaining bool
-	shuttingDown     bool
+	currentCard       *anki.ParsedCard
+	cardShownAt       time.Time
+	prefetchedCard    *anki.ParsedCard
+	prefetchDeck      string
+	prefetchProfile   string
+	prefetchStudyMode string
+	prefetchColPath   string
+	prefetchColMod    time.Time
+	lastRemaining     int
+	lastRemainingDue  int
+	lastRemainingNew  int
+	hasLastRemaining  bool
+	shuttingDown      bool
 }
 
 func NewController(hooks UIHooks) *Controller {
@@ -166,17 +175,21 @@ func (c *Controller) pingAnkiConnect() (available bool, timedOut bool, err error
 func (c *Controller) fetchNextCardHybrid(selectedDeck string) (*anki.ParsedCard, error) {
 	c.mu.Lock()
 	var frontFields, backFields []string
-	if c.cfg != nil && c.cfg.DeckFields != nil {
-		if sel, ok := c.cfg.DeckFields[selectedDeck]; ok {
-			frontFields = append([]string(nil), sel.FrontFields...)
-			backFields = append([]string(nil), sel.BackFields...)
+	studyMode := config.StudyModeBoth
+	if c.cfg != nil {
+		studyMode = c.cfg.StudyMode
+		if c.cfg.DeckFields != nil {
+			if sel, ok := c.cfg.DeckFields[selectedDeck]; ok {
+				frontFields = append([]string(nil), sel.FrontFields...)
+				backFields = append([]string(nil), sel.BackFields...)
+			}
 		}
 	}
 	c.mu.Unlock()
 
 	avail, timedOut, _ := c.pingAnkiConnect()
 	if avail {
-		return c.ankiClient.FetchNextCardWithFields(selectedDeck, frontFields, backFields)
+		return c.ankiClient.FetchNextCardWithOptions(selectedDeck, frontFields, backFields, studyMode)
 	}
 	if timedOut {
 		return nil, errors.New("AnkiConnect timed out")
@@ -185,7 +198,7 @@ func (c *Controller) fetchNextCardHybrid(selectedDeck string) (*anki.ParsedCard,
 	if err != nil {
 		return nil, err
 	}
-	return anki.SQLiteFetchNextCardWithFields(colPath, selectedDeck, frontFields, backFields)
+	return anki.SQLiteFetchNextCardWithOptions(colPath, selectedDeck, frontFields, backFields, studyMode)
 }
 
 func (c *Controller) GetDeckFields(selectedDeck string) (*anki.DeckFieldsInfo, error) {
@@ -222,7 +235,10 @@ func (c *Controller) GetDecks() ([]string, error) {
 	c.mu.Lock()
 	onlyDue := c.cfg.OnlyDueDecks
 	c.mu.Unlock()
+	return c.GetDecksFiltered(onlyDue)
+}
 
+func (c *Controller) GetDecksFiltered(onlyDue bool) ([]string, error) {
 	avail, _, _ := c.pingAnkiConnect()
 	if avail {
 		return c.ankiClient.DeckNames(onlyDue)
@@ -271,13 +287,19 @@ func (c *Controller) SaveConfig(newCfg config.Config) error {
 	if newCfg.DailyDate == "" {
 		newCfg.DailyDate = c.cfg.DailyDate
 		newCfg.DailyInitialTotal = c.cfg.DailyInitialTotal
+		newCfg.DailyInitialDue = c.cfg.DailyInitialDue
+		newCfg.DailyInitialNew = c.cfg.DailyInitialNew
 	}
 	if newCfg.SelectedDeck != c.cfg.SelectedDeck || newCfg.SelectedProfile != c.cfg.SelectedProfile {
 		newCfg.DailyDate = ""
 		newCfg.DailyInitialTotal = 0
+		newCfg.DailyInitialDue = 0
+		newCfg.DailyInitialNew = 0
 		c.currentCard = nil
 		c.cardShownAt = time.Time{}
 		c.lastRemaining = 0
+		c.lastRemainingDue = 0
+		c.lastRemainingNew = 0
 		c.hasLastRemaining = false
 	} else {
 		c.currentCard = nil
@@ -379,21 +401,23 @@ func (c *Controller) clearPrefetchLocked() {
 	c.prefetchedCard = nil
 	c.prefetchDeck = ""
 	c.prefetchProfile = ""
+	c.prefetchStudyMode = ""
 	c.prefetchColPath = ""
 	c.prefetchColMod = time.Time{}
 }
 
-func (c *Controller) takePrefetchedCard(selectedDeck, selectedProfile string) *anki.ParsedCard {
+func (c *Controller) takePrefetchedCard(selectedDeck, selectedProfile, studyMode string) *anki.ParsedCard {
 	c.mu.Lock()
 	card := c.prefetchedCard
 	deck := c.prefetchDeck
 	profile := c.prefetchProfile
+	mode := c.prefetchStudyMode
 	colPath := c.prefetchColPath
 	colMod := c.prefetchColMod
 	c.clearPrefetchLocked()
 	c.mu.Unlock()
 
-	if card == nil || deck != selectedDeck || profile != selectedProfile {
+	if card == nil || deck != selectedDeck || profile != selectedProfile || mode != studyMode {
 		return nil
 	}
 	if anki.IsAnkiDesktopRunning() || colPath == "" {
@@ -413,6 +437,7 @@ func (c *Controller) prefetchNextCard() {
 	}
 	selectedDeck := c.cfg.SelectedDeck
 	selectedProfile := c.cfg.SelectedProfile
+	studyMode := c.cfg.StudyMode
 	c.mu.Unlock()
 
 	if anki.IsAnkiDesktopRunning() {
@@ -433,12 +458,13 @@ func (c *Controller) prefetchNextCard() {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.shuttingDown || c.cfg == nil || c.cfg.SelectedDeck != selectedDeck || c.cfg.SelectedProfile != selectedProfile {
+	if c.shuttingDown || c.cfg == nil || c.cfg.SelectedDeck != selectedDeck || c.cfg.SelectedProfile != selectedProfile || c.cfg.StudyMode != studyMode {
 		return
 	}
 	c.prefetchedCard = card
 	c.prefetchDeck = selectedDeck
 	c.prefetchProfile = selectedProfile
+	c.prefetchStudyMode = studyMode
 	c.prefetchColPath = colPath
 	c.prefetchColMod = stBefore.ModTime()
 }
@@ -450,6 +476,7 @@ func (c *Controller) ShowCardNow() (*anki.ParsedCard, error) {
 	c.mu.Lock()
 	selectedDeck := c.cfg.SelectedDeck
 	selectedProfile := c.cfg.SelectedProfile
+	studyMode := c.cfg.StudyMode
 	alreadyVisible := c.widgetVisible
 	activeCard := c.currentCard
 	if c.snoozeTimer != nil {
@@ -466,7 +493,7 @@ func (c *Controller) ShowCardNow() (*anki.ParsedCard, error) {
 		return activeCard, nil
 	}
 
-	card := c.takePrefetchedCard(selectedDeck, selectedProfile)
+	card := c.takePrefetchedCard(selectedDeck, selectedProfile, studyMode)
 	if card == nil {
 		var err error
 		card, err = c.fetchNextCardHybrid(selectedDeck)
@@ -481,12 +508,14 @@ func (c *Controller) ShowCardNow() (*anki.ParsedCard, error) {
 		}
 	}
 
-	prog := c.updateDailyProgress(card.TotalRemaining)
+	prog := c.updateDailyProgress(card.RemainingDue, card.RemainingNew, studyMode)
 
 	c.mu.Lock()
 	c.currentCard = card
 	c.cardShownAt = time.Now()
 	c.lastRemaining = card.TotalRemaining
+	c.lastRemainingDue = card.RemainingDue
+	c.lastRemainingNew = card.RemainingNew
 	c.hasLastRemaining = true
 	c.widgetVisible = true
 	c.mu.Unlock()
@@ -539,8 +568,23 @@ func (c *Controller) SubmitAnswer(cardID int64, ease int) error {
 		if remaining < 0 {
 			remaining = 0
 		}
+		remDue := c.currentCard.RemainingDue
+		remNew := c.currentCard.RemainingNew
+		if c.currentCard.IsDue {
+			if remDue > 0 {
+				remDue--
+			}
+		} else {
+			if remNew > 0 {
+				remNew--
+			}
+		}
+		c.currentCard.RemainingDue = remDue
+		c.currentCard.RemainingNew = remNew
 		c.currentCard.TotalRemaining = remaining
 		c.lastRemaining = remaining
+		c.lastRemainingDue = remDue
+		c.lastRemainingNew = remNew
 		c.hasLastRemaining = true
 	}
 	c.currentCard = nil
@@ -644,28 +688,46 @@ func (c *Controller) GetDailyProgress() DailyProgress {
 	defer c.mu.Unlock()
 
 	if c.cfg.DailyDate != "" && c.cfg.DailyDate != today {
-		return buildDailyProgress(today, 0, 0)
+		return buildDailyProgress(today, 0, 0, 0, 0)
 	}
-	remaining := 0
+	remDue, remNew := 0, 0
 	switch {
 	case c.currentCard != nil:
-		remaining = c.currentCard.TotalRemaining
+		remDue = c.currentCard.RemainingDue
+		remNew = c.currentCard.RemainingNew
 	case c.hasLastRemaining:
-		remaining = c.lastRemaining
+		remDue = c.lastRemainingDue
+		remNew = c.lastRemainingNew
 	case c.cfg.DailyDate == today:
-		remaining = c.cfg.DailyInitialTotal
+		remDue = c.cfg.DailyInitialDue
+		remNew = c.cfg.DailyInitialNew
 	}
-	return buildDailyProgress(c.cfg.DailyDate, c.cfg.DailyInitialTotal, remaining)
+	return buildDailyProgress(c.cfg.DailyDate, c.cfg.DailyInitialDue, remDue, c.cfg.DailyInitialNew, remNew)
 }
 
-func (c *Controller) updateDailyProgress(remaining int) DailyProgress {
+func (c *Controller) updateDailyProgress(remDue, remNew int, studyMode string) DailyProgress {
 	today := c.currentCollectionDay()
 
 	c.mu.Lock()
 	changed := false
-	if c.cfg.DailyDate != today || remaining > c.cfg.DailyInitialTotal {
+	if c.cfg.DailyDate != today {
 		c.cfg.DailyDate = today
-		c.cfg.DailyInitialTotal = remaining
+		c.cfg.DailyInitialDue = 0
+		c.cfg.DailyInitialNew = 0
+		c.cfg.DailyInitialTotal = 0
+		changed = true
+	}
+	if studyMode != config.StudyModeNew && remDue > c.cfg.DailyInitialDue {
+		c.cfg.DailyInitialDue = remDue
+		changed = true
+	}
+	if studyMode != config.StudyModeDue && remNew > c.cfg.DailyInitialNew {
+		c.cfg.DailyInitialNew = remNew
+		changed = true
+	}
+	desiredTotal := c.cfg.DailyInitialDue + c.cfg.DailyInitialNew
+	if desiredTotal != c.cfg.DailyInitialTotal {
+		c.cfg.DailyInitialTotal = desiredTotal
 		changed = true
 	}
 	snapshot := *c.cfg
@@ -674,25 +736,43 @@ func (c *Controller) updateDailyProgress(remaining int) DailyProgress {
 	if changed {
 		_ = config.Save(&snapshot)
 	}
-	return buildDailyProgress(today, snapshot.DailyInitialTotal, remaining)
+	return buildDailyProgress(today, snapshot.DailyInitialDue, remDue, snapshot.DailyInitialNew, remNew)
 }
 
-func buildDailyProgress(date string, initial, remaining int) DailyProgress {
-	if remaining < 0 {
-		remaining = 0
+func buildDailyProgress(date string, initDue, remDue, initNew, remNew int) DailyProgress {
+	if remDue < 0 {
+		remDue = 0
 	}
-	if initial < remaining {
-		initial = remaining
+	if initDue < remDue {
+		initDue = remDue
 	}
-	completed := initial - remaining
-	if completed < 0 {
-		completed = 0
+	completedDue := initDue - remDue
+	if completedDue < 0 {
+		completedDue = 0
 	}
+
+	if remNew < 0 {
+		remNew = 0
+	}
+	if initNew < remNew {
+		initNew = remNew
+	}
+	completedNew := initNew - remNew
+	if completedNew < 0 {
+		completedNew = 0
+	}
+
 	return DailyProgress{
 		Date:         date,
-		InitialTotal: initial,
-		Remaining:    remaining,
-		Completed:    completed,
+		InitialTotal: initDue + initNew,
+		Remaining:    remDue + remNew,
+		Completed:    completedDue + completedNew,
+		InitialDue:   initDue,
+		RemainingDue: remDue,
+		CompletedDue: completedDue,
+		InitialNew:   initNew,
+		RemainingNew: remNew,
+		CompletedNew: completedNew,
 	}
 }
 

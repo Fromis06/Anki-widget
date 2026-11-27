@@ -20,8 +20,7 @@ type deckTreeNode struct {
 	children map[string]*deckTreeNode
 }
 
-// BuildDeckOptions organizes flat "::" Anki deck names into an indented natural-sorted tree.
-func BuildDeckOptions(decks []string) []DeckOption {
+func buildDeckTree(decks []string) map[string]*deckTreeNode {
 	roots := make(map[string]*deckTreeNode)
 
 	for _, raw := range decks {
@@ -51,18 +50,28 @@ func BuildDeckOptions(decks []string) []DeckOption {
 			curr = node.children
 		}
 	}
+	return roots
+}
+
+func sortedDeckNodes(m map[string]*deckTreeNode) []*deckTreeNode {
+	list := make([]*deckTreeNode, 0, len(m))
+	for _, n := range m {
+		list = append(list, n)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return naturalLess(list[i].label, list[j].label)
+	})
+	return list
+}
+
+// BuildDeckOptions organizes flat "::" Anki deck names into an indented natural-sorted tree.
+func BuildDeckOptions(decks []string) []DeckOption {
+	roots := buildDeckTree(decks)
 
 	var out []DeckOption
 	var walk func(m map[string]*deckTreeNode, depth int)
 	walk = func(m map[string]*deckTreeNode, depth int) {
-		list := make([]*deckTreeNode, 0, len(m))
-		for _, n := range m {
-			list = append(list, n)
-		}
-		sort.Slice(list, func(i, j int) bool {
-			return naturalLess(list[i].label, list[j].label)
-		})
-		for _, n := range list {
+		for _, n := range sortedDeckNodes(m) {
 			hasSub := len(n.children) > 0
 			out = append(out, DeckOption{
 				FullName:   n.fullName,
@@ -76,6 +85,93 @@ func BuildDeckOptions(decks []string) []DeckOption {
 		}
 	}
 	walk(roots, 0)
+	return out
+}
+
+// DeckAncestorPaths returns every parent deck path for a hierarchical "::" deck name
+// (excluding the deck itself). For example "A::B::C" -> ["A", "A::B"].
+func DeckAncestorPaths(fullName string) []string {
+	trimmed := strings.TrimSpace(fullName)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.Split(trimmed, "::")
+	var clean []string
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			clean = append(clean, s)
+		}
+	}
+	if len(clean) <= 1 {
+		return nil
+	}
+	out := make([]string, 0, len(clean)-1)
+	for i := 1; i < len(clean); i++ {
+		out = append(out, strings.Join(clean[:i], "::"))
+	}
+	return out
+}
+
+// VisibleDeckOptions returns the flattened deck list respecting collapsed parent nodes.
+// When query is empty, subdecks are hidden unless their parent path is present in expanded.
+// When query is non-empty, matching decks and their ancestor paths are expanded automatically.
+func VisibleDeckOptions(decks []string, expanded map[string]bool, query string) []DeckOption {
+	roots := buildDeckTree(decks)
+	q := strings.ToLower(strings.TrimSpace(query))
+
+	var out []DeckOption
+	if q == "" {
+		var walk func(m map[string]*deckTreeNode, depth int)
+		walk = func(m map[string]*deckTreeNode, depth int) {
+			for _, n := range sortedDeckNodes(m) {
+				hasSub := len(n.children) > 0
+				out = append(out, DeckOption{
+					FullName:   n.fullName,
+					Label:      n.label,
+					Depth:      depth,
+					HasSubdeck: hasSub,
+				})
+				if hasSub && expanded[n.fullName] {
+					walk(n.children, depth+1)
+				}
+			}
+		}
+		walk(roots, 0)
+		return out
+	}
+
+	var matchesSubtree func(n *deckTreeNode) bool
+	matchesSubtree = func(n *deckTreeNode) bool {
+		if strings.Contains(strings.ToLower(n.fullName), q) {
+			return true
+		}
+		for _, child := range n.children {
+			if matchesSubtree(child) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var walkSearch func(m map[string]*deckTreeNode, depth int)
+	walkSearch = func(m map[string]*deckTreeNode, depth int) {
+		for _, n := range sortedDeckNodes(m) {
+			if !matchesSubtree(n) {
+				continue
+			}
+			hasSub := len(n.children) > 0
+			out = append(out, DeckOption{
+				FullName:   n.fullName,
+				Label:      n.label,
+				Depth:      depth,
+				HasSubdeck: hasSub,
+			})
+			if hasSub {
+				walkSearch(n.children, depth+1)
+			}
+		}
+	}
+	walkSearch(roots, 0)
 	return out
 }
 

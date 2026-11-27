@@ -26,6 +26,24 @@ func newPixelCanvas(w, h int) *pixelCanvas {
 	}
 }
 
+// ensurePixelCanvas reuses an existing pixel buffer whenever its capacity is sufficient,
+// avoiding per-frame allocations during slider drags, hovers, and scrolling.
+func ensurePixelCanvas(c *pixelCanvas, w, h int) *pixelCanvas {
+	if w <= 0 || h <= 0 {
+		return newPixelCanvas(maxInt(1, w), maxInt(1, h))
+	}
+	need := w * h * 4
+	if c != nil && cap(c.pixels) >= need {
+		c.w = w
+		c.h = h
+		c.clipY0 = 0
+		c.clipY1 = h
+		c.pixels = c.pixels[:need]
+		return c
+	}
+	return newPixelCanvas(w, h)
+}
+
 func (c *pixelCanvas) setClipY(y0, y1 int32) {
 	c.clipY0 = maxInt(0, int(y0))
 	c.clipY1 = minInt(c.h, int(y1))
@@ -224,6 +242,162 @@ func (c *pixelCanvas) drawToggleSwitch(rc rect, on bool, p ThemePalette) {
 	}
 	ky := float64(rc.Top) + h/2.0
 	c.fillCircle(kx, ky, kr, p.ToggleKnob)
+}
+
+func lerpRGBA(a, b rgba, t float64) rgba {
+	t = clamp01(t)
+	inv := 1.0 - t
+	return rgba{
+		r: uint8(float64(a.r)*inv + float64(b.r)*t + 0.5),
+		g: uint8(float64(a.g)*inv + float64(b.g)*t + 0.5),
+		b: uint8(float64(a.b)*inv + float64(b.b)*t + 0.5),
+		a: uint8(float64(a.a)*inv + float64(b.a)*t + 0.5),
+	}
+}
+
+// drawSingleProgressBar renders an anti-aliased capsule bar for a single queue (Due-only or New-only).
+func (c *pixelCanvas) drawSingleProgressBar(rc rect, trackCol, fillCol rgba, ratio float64) {
+	rw := float64(rc.Width())
+	rh := float64(rc.Height())
+	if rw <= 0 || rh <= 0 {
+		return
+	}
+	ratio = clamp01(ratio)
+	fillW := rw * ratio
+	if ratio > 0 && fillW < rh {
+		fillW = math.Min(rw, rh)
+	}
+	fillEndX := float64(rc.Left) + fillW
+
+	r := math.Min(rh/2.0, rw/2.0)
+	cx := float64(rc.Left) + rw/2.0
+	cy := float64(rc.Top) + rh/2.0
+	hw := rw / 2.0
+	hh := rh / 2.0
+
+	x0 := maxInt(0, int(math.Floor(float64(rc.Left)))-1)
+	y0 := maxInt(c.clipY0, int(math.Floor(float64(rc.Top)))-1)
+	x1 := minInt(c.w, int(math.Ceil(float64(rc.Right)))+1)
+	y1 := minInt(c.clipY1, int(math.Ceil(float64(rc.Bottom)))+1)
+
+	for y := y0; y < y1; y++ {
+		py := float64(y) + 0.5
+		for x := x0; x < x1; x++ {
+			px := float64(x) + 0.5
+			d := roundedBoxSDF(px, py, cx, cy, hw, hh, r)
+			if d > 0.5 {
+				continue
+			}
+			cov := clamp01(0.5 - d)
+			col := trackCol
+			if fillW > 0 {
+				if px <= fillEndX-0.5 {
+					col = fillCol
+				} else if px < fillEndX+0.5 {
+					col = lerpRGBA(trackCol, fillCol, fillEndX+0.5-px)
+				}
+			}
+			c.blendPixel(x, y, col, cov)
+		}
+	}
+}
+
+// drawDualProgressBar renders a single unified anti-aliased capsule split into a Due (left)
+// and New (right) segment, each with its own tinted track and completion fill.
+func (c *pixelCanvas) drawDualProgressBar(
+	rc rect,
+	splitRatio float64,
+	dueTrack, dueFill rgba, dueRatio float64,
+	newTrack, newFill rgba, newRatio float64,
+	sepCol rgba,
+) {
+	rw := float64(rc.Width())
+	rh := float64(rc.Height())
+	if rw <= 0 || rh <= 0 {
+		return
+	}
+	if splitRatio < 0.2 {
+		splitRatio = 0.2
+	} else if splitRatio > 0.8 {
+		splitRatio = 0.8
+	}
+	dueRatio = clamp01(dueRatio)
+	newRatio = clamp01(newRatio)
+
+	sepW := 1.5
+	if rw < 14 {
+		sepW = 1.0
+	}
+	usableW := rw - sepW
+	if usableW <= 2 {
+		c.drawSingleProgressBar(rc, dueTrack, dueFill, dueRatio)
+		return
+	}
+
+	leftW := usableW * splitRatio
+	rightW := usableW - leftW
+	leftStart := float64(rc.Left)
+	sepStart := leftStart + leftW
+	rightStart := sepStart + sepW
+
+	minSegFill := math.Max(2.0, rh*0.65)
+	dueFillW := leftW * dueRatio
+	if dueRatio > 0 && dueFillW < minSegFill {
+		dueFillW = math.Min(leftW, minSegFill)
+	}
+	newFillW := rightW * newRatio
+	if newRatio > 0 && newFillW < minSegFill {
+		newFillW = math.Min(rightW, minSegFill)
+	}
+	dueFillEnd := leftStart + dueFillW
+	newFillEnd := rightStart + newFillW
+
+	r := math.Min(rh/2.0, rw/2.0)
+	cx := leftStart + rw/2.0
+	cy := float64(rc.Top) + rh/2.0
+	hw := rw / 2.0
+	hh := rh / 2.0
+
+	x0 := maxInt(0, int(math.Floor(leftStart))-1)
+	y0 := maxInt(c.clipY0, int(math.Floor(float64(rc.Top)))-1)
+	x1 := minInt(c.w, int(math.Ceil(float64(rc.Right)))+1)
+	y1 := minInt(c.clipY1, int(math.Ceil(float64(rc.Bottom)))+1)
+
+	for y := y0; y < y1; y++ {
+		py := float64(y) + 0.5
+		for x := x0; x < x1; x++ {
+			px := float64(x) + 0.5
+			d := roundedBoxSDF(px, py, cx, cy, hw, hh, r)
+			if d > 0.5 {
+				continue
+			}
+			cov := clamp01(0.5 - d)
+			var col rgba
+			switch {
+			case px < sepStart:
+				col = dueTrack
+				if dueFillW > 0 {
+					if px <= dueFillEnd-0.5 {
+						col = dueFill
+					} else if px < dueFillEnd+0.5 {
+						col = lerpRGBA(dueTrack, dueFill, dueFillEnd+0.5-px)
+					}
+				}
+			case px < rightStart:
+				col = sepCol
+			default:
+				col = newTrack
+				if newFillW > 0 {
+					if px <= newFillEnd-0.5 {
+						col = newFill
+					} else if px < newFillEnd+0.5 {
+						col = lerpRGBA(newTrack, newFill, newFillEnd+0.5-px)
+					}
+				}
+			}
+			c.blendPixel(x, y, col, cov)
+		}
+	}
 }
 
 func (c *pixelCanvas) drawLucideIcon(name string, x, y, size int32, tint rgba) {

@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -103,15 +104,24 @@ type WidgetWindow struct {
 	hits         []hitRegion
 	headerH      int32
 
-	cardScrollY      int32
-	cardMaxScroll    int32
-	settingsScrollY  int32
-	settingsMaxScr   int32
-	deckScrollY      int32
-	deckMaxScroll    int32
-	deckDropdownOpen bool
-	deckSearch       string
-	focus            textFocus
+	cardScrollY       int32
+	cardMaxScroll     int32
+	settingsScrollY   int32
+	settingsMaxScr    int32
+	deckScrollY       int32
+	deckMaxScroll     int32
+	deckDropdownOpen  bool
+	deckExpanded      map[string]bool
+	deckSearch        string
+	studyDropdownOpen bool
+	studyBtnRc        rect
+	intervalTrackRc   rect
+	draggingInterval  bool
+	lastMouseX        int32
+	focus             textFocus
+
+	mainCanvas    *pixelCanvas
+	overlayCanvas *pixelCanvas
 
 	zoomedSrc    string
 	imageCache   map[string]*app.DecodedDIB
@@ -151,6 +161,7 @@ func NewWidgetWindow() *WidgetWindow {
 	return &WidgetWindow{
 		dpi:          96,
 		secondsLeft:  autoHideSeconds,
+		deckExpanded: make(map[string]bool),
 		imageCache:   make(map[string]*app.DecodedDIB),
 		imageLoading: make(map[string]bool),
 		sourceMode:   "sqlite",
@@ -429,9 +440,14 @@ func (w *WidgetWindow) hideWindowUI() {
 	w.visible = false
 	w.zoomedSrc = ""
 	w.deckDropdownOpen = false
+	w.studyDropdownOpen = false
+	w.draggingInterval = false
 	w.focus = focusNone
 	_, _, _ = procKillTimer.Call(w.hwnd, timerAutoHideID)
 	_, _, _ = procShowWindow.Call(w.hwnd, swHide)
+	w.mainCanvas = nil
+	w.overlayCanvas = nil
+	w.deckExpanded = make(map[string]bool)
 	w.imageCache = make(map[string]*app.DecodedDIB)
 	w.imageLoading = make(map[string]bool)
 }
@@ -488,8 +504,9 @@ func (w *WidgetWindow) triggerRefreshDecks() {
 	if w.ctrl == nil {
 		return
 	}
+	onlyDue := w.draft.OnlyDueDecks
 	go func() {
-		decks, _ := w.ctrl.GetDecks()
+		decks, _ := w.ctrl.GetDecksFiltered(onlyDue)
 		profiles, _ := w.ctrl.GetProfiles()
 		mode := w.ctrl.GetDataSourceMode()
 		w.inboxMu.Lock()
@@ -595,6 +612,8 @@ func (w *WidgetWindow) openSettingsTab() {
 	w.tab = tabSettings
 	w.zoomedSrc = ""
 	w.deckDropdownOpen = false
+	w.studyDropdownOpen = false
+	w.draggingInterval = false
 	w.focus = focusNone
 	w.settingsScrollY = 0
 	if w.ctrl != nil {
@@ -612,6 +631,8 @@ func (w *WidgetWindow) openSettingsTab() {
 func (w *WidgetWindow) closeSettingsToReview() {
 	w.tab = tabReview
 	w.deckDropdownOpen = false
+	w.studyDropdownOpen = false
+	w.draggingInterval = false
 	w.focus = focusNone
 	w.applyWindowFrameTheme()
 	if w.isRevealed {
@@ -632,6 +653,7 @@ func (w *WidgetWindow) doSaveSettings() {
 		next.DeckFields = make(map[string]config.DeckFieldSelection)
 	}
 	deckChanged := next.SelectedDeck != prev.SelectedDeck || next.SelectedProfile != prev.SelectedProfile
+	studyModeChanged := next.StudyMode != prev.StudyMode
 	pSel := prev.DeckFields[next.SelectedDeck]
 	nSel := next.DeckFields[next.SelectedDeck]
 	fieldsChanged := strings.Join(pSel.FrontFields, "|") != strings.Join(nSel.FrontFields, "|") ||
@@ -645,13 +667,55 @@ func (w *WidgetWindow) doSaveSettings() {
 			w.inSaveClose = false
 		} else {
 			w.inSaveErr = ""
-			w.inSaveClose = deckChanged || fieldsChanged
+			w.inSaveClose = deckChanged || fieldsChanged || studyModeChanged
 		}
 		w.inboxMu.Unlock()
 		if w.hwnd != 0 {
 			_, _, _ = procPostMessageW.Call(w.hwnd, wmMsgSaveDone, 0, 0)
 		}
 	}()
+}
+
+func intervalMinutesFromX(x, trackLeft, trackWidth int32) int {
+	if trackWidth <= 0 {
+		return config.DefaultIntervalMinutes
+	}
+	t := float64(x-trackLeft) / float64(trackWidth)
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	span := config.MaxIntervalMinutes - config.MinIntervalMinutes
+	val := config.MinIntervalMinutes + int(math.Round(t*float64(span)))
+	if val < config.MinIntervalMinutes {
+		val = config.MinIntervalMinutes
+	}
+	if val > config.MaxIntervalMinutes {
+		val = config.MaxIntervalMinutes
+	}
+	return val
+}
+
+func (w *WidgetWindow) beginIntervalDrag(x int32) {
+	w.draggingInterval = true
+	w.focus = focusNone
+	w.deckDropdownOpen = false
+	w.studyDropdownOpen = false
+	w.hoverID = "sett:intTrack"
+	if w.hwnd != 0 {
+		_, _, _ = procSetCapture.Call(w.hwnd)
+	}
+	w.updateIntervalFromMouse(x)
+	w.redraw()
+}
+
+func (w *WidgetWindow) updateIntervalFromMouse(x int32) {
+	next := intervalMinutesFromX(x, w.intervalTrackRc.Left, w.intervalTrackRc.Width())
+	if next != w.draft.IntervalMinutes {
+		w.draft.IntervalMinutes = next
+		w.redraw()
+	}
 }
 
 func winProcTrampoline(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
@@ -751,6 +815,13 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 
 	case wmSetCursor:
 		if (lParam & 0xFFFF) == htClient {
+			if w.draggingInterval {
+				cHandle, _, _ := procLoadCursorW.Call(0, uintptr(idcHand))
+				if cHandle != 0 {
+					_, _, _ = procSetCursor.Call(cHandle)
+					return 1
+				}
+			}
 			for _, h := range w.hits {
 				if h.id == w.hoverID {
 					curID := idcArrow
@@ -769,6 +840,12 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 		}
 
 	case wmMouseMove:
+		x := signedLoWord(lParam)
+		y := signedHiWord(lParam)
+		if w.draggingInterval {
+			w.updateIntervalFromMouse(x)
+			return 0
+		}
 		if !w.isHovered {
 			w.isHovered = true
 			tme := trackMouseEvent{
@@ -780,8 +857,6 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 			w.syncAutoHideTimer()
 			w.redraw()
 		}
-		x := signedLoWord(lParam)
-		y := signedHiWord(lParam)
 		newHover := ""
 		for i := len(w.hits) - 1; i >= 0; i-- {
 			if w.hits[i].rc.Contains(x, y) {
@@ -796,6 +871,9 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 		return 0
 
 	case wmMouseLeave:
+		if w.draggingInterval {
+			return 0
+		}
 		w.isHovered = false
 		w.hoverID = ""
 		w.syncAutoHideTimer()
@@ -805,11 +883,17 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 	case wmLButtonDown:
 		x := signedLoWord(lParam)
 		y := signedHiWord(lParam)
+		w.lastMouseX = x
 		for i := len(w.hits) - 1; i >= 0; i-- {
 			if w.hits[i].rc.Contains(x, y) {
 				w.hits[i].action()
 				return 0
 			}
+		}
+		if w.studyDropdownOpen {
+			w.studyDropdownOpen = false
+			w.redraw()
+			return 0
 		}
 		if w.focus != focusNone {
 			w.focus = focusNone
@@ -821,6 +905,22 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 		}
 		return 0
 
+	case wmLButtonUp:
+		if w.draggingInterval {
+			w.draggingInterval = false
+			_, _, _ = procReleaseCapture.Call()
+			w.redraw()
+			return 0
+		}
+		return 0
+
+	case wmCaptureChanged:
+		if w.draggingInterval {
+			w.draggingInterval = false
+			w.redraw()
+		}
+		return 0
+
 	case wmMouseWheel:
 		delta := wheelDelta(wParam)
 		step := w.dp(32)
@@ -828,6 +928,9 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 			step = -step
 		}
 		if w.tab == tabSettings {
+			if w.studyDropdownOpen {
+				return 0
+			}
 			if w.deckDropdownOpen {
 				w.deckScrollY -= step
 				if w.deckScrollY < 0 {
@@ -889,6 +992,11 @@ func (w *WidgetWindow) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr)
 					w.showAndPosition(app.FrontWidth, app.FrontHeight, true)
 				}
 				w.syncAutoHideTimer()
+				return 0
+			}
+			if w.studyDropdownOpen {
+				w.studyDropdownOpen = false
+				w.redraw()
 				return 0
 			}
 			if w.deckDropdownOpen {

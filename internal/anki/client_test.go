@@ -620,6 +620,152 @@ func TestSQLiteCollectionDayFastAndCachesCRT(t *testing.T) {
 	}
 }
 
+func TestClientStudyModes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ankiconnectRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		writeRes := func(res interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result": res, "error": nil})
+		}
+		switch req.Action {
+		case "findCards":
+			params := req.Params.(map[string]interface{})
+			q := params["query"].(string)
+			switch {
+			case contains(q, "is:learn"):
+				writeRes([]int64{})
+			case contains(q, "is:due"):
+				writeRes([]int64{1001, 1002})
+			case contains(q, "is:new"):
+				writeRes([]int64{2001, 2002})
+			default:
+				writeRes([]int64{})
+			}
+		case "getDeckStats":
+			writeRes(map[string]DeckStats{
+				"1": {DeckID: 1, Name: "Deck", NewCount: 2, LearnCount: 0, ReviewCount: 2},
+			})
+		case "guiCurrentCard":
+			// Simulate Anki Desktop currently showing due card 1001
+			writeRes(CardInfo{CardID: 1001, DeckName: "Deck"})
+		case "cardsInfo":
+			params := req.Params.(map[string]interface{})
+			ids := params["cards"].([]interface{})
+			cid := int64(ids[0].(float64))
+			writeRes([]CardInfo{{
+				CardID:   cid,
+				DeckName: "Deck",
+				Fields: map[string]FieldData{
+					"Front": {Value: "Q", Order: 0},
+					"Back":  {Value: "A", Order: 1},
+				},
+			}})
+		default:
+			writeRes(nil)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+
+	// 1. Due Only: serves due card 1001, RemainingDue=2, RemainingNew=0, TotalRemaining=2
+	dueCard, err := client.FetchNextCardWithOptions("Deck", nil, nil, "due")
+	if err != nil {
+		t.Fatalf("due mode error: %v", err)
+	}
+	if dueCard.CardID != 1001 || !dueCard.IsDue || dueCard.RemainingDue != 2 || dueCard.RemainingNew != 0 || dueCard.TotalRemaining != 2 {
+		t.Fatalf("unexpected due-only card: %+v", dueCard)
+	}
+
+	// 2. New Only: skips due guiCurrentCard 1001 and serves new card 2001 with RemainingDue=0
+	newCard, err := client.FetchNextCardWithOptions("Deck", nil, nil, "new")
+	if err != nil {
+		t.Fatalf("new mode error: %v", err)
+	}
+	if newCard.CardID != 2001 || newCard.IsDue || newCard.RemainingDue != 0 || newCard.RemainingNew != 2 || newCard.TotalRemaining != 2 {
+		t.Fatalf("unexpected new-only card: %+v", newCard)
+	}
+
+	// 3. Both: includes both counts (TotalRemaining=4)
+	bothCard, err := client.FetchNextCardWithOptions("Deck", nil, nil, "both")
+	if err != nil {
+		t.Fatalf("both mode error: %v", err)
+	}
+	if bothCard.CardID != 1001 || !bothCard.IsDue || bothCard.RemainingDue != 2 || bothCard.RemainingNew != 2 || bothCard.TotalRemaining != 4 {
+		t.Fatalf("unexpected both-mode card: %+v", bothCard)
+	}
+}
+
+func TestSQLiteStudyModes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "collection.anki2")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	crt := time.Now().Add(-5 * 24 * time.Hour).Unix()
+	for _, s := range []string{
+		`CREATE TABLE col (ver integer NOT NULL, crt integer NOT NULL, mod integer NOT NULL DEFAULT 0, ls integer NOT NULL DEFAULT 0);`,
+		`CREATE TABLE decks (id integer PRIMARY KEY NOT NULL, name text NOT NULL);`,
+		`CREATE TABLE notetypes (id integer PRIMARY KEY NOT NULL, name text NOT NULL);`,
+		`CREATE TABLE fields (ntid integer NOT NULL, ord integer NOT NULL, name text NOT NULL, PRIMARY KEY (ntid, ord));`,
+		`CREATE TABLE notes (id integer PRIMARY KEY NOT NULL, mid integer NOT NULL, flds text NOT NULL);`,
+		`CREATE TABLE cards (id integer PRIMARY KEY NOT NULL, nid integer NOT NULL, did integer NOT NULL, ord integer NOT NULL, mod integer NOT NULL, usn integer NOT NULL, type integer NOT NULL, queue integer NOT NULL, due integer NOT NULL, ivl integer NOT NULL, factor integer NOT NULL, reps integer NOT NULL, lapses integer NOT NULL, left integer NOT NULL, odue integer NOT NULL, odid integer NOT NULL, flags integer NOT NULL, data text NOT NULL);`,
+		`CREATE TABLE revlog (id integer PRIMARY KEY NOT NULL, cid integer NOT NULL, usn integer NOT NULL, ease integer NOT NULL, ivl integer NOT NULL, lastIvl integer NOT NULL, factor integer NOT NULL, time integer NOT NULL, type integer NOT NULL);`,
+	} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
+	}
+	_, _ = db.Exec(`INSERT INTO col (ver, crt) VALUES (18, ?)`, crt)
+	_, _ = db.Exec(`INSERT INTO decks (id, name) VALUES (1, 'Default')`)
+	_, _ = db.Exec(`INSERT INTO notetypes (id, name) VALUES (1, 'Basic')`)
+	_, _ = db.Exec(`INSERT INTO fields (ntid, ord, name) VALUES (1, 0, 'Front'), (1, 1, 'Back')`)
+	_, _ = db.Exec(`INSERT INTO notes (id, mid, flds) VALUES (10, 1, 'DueQ' || char(31) || 'DueA'), (11, 1, 'NewQ' || char(31) || 'NewA')`)
+	_, _ = db.Exec(`INSERT INTO cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data) VALUES
+		(301, 10, 1, 0, 0, 0, 2, 2, 1, 5, 2500, 1, 0, 0, 0, 0, 0, '{}'),
+		(302, 11, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, '{}')`)
+	_ = db.Close()
+
+	// 1. New Only skips due card 301 and serves new card 302
+	newCard, err := SQLiteFetchNextCardWithOptions(dbPath, "Default", nil, nil, "new")
+	if err != nil {
+		t.Fatalf("sqlite new mode: %v", err)
+	}
+	if newCard.CardID != 302 || newCard.IsDue || newCard.RemainingDue != 0 || newCard.RemainingNew != 1 || newCard.TotalRemaining != 1 {
+		t.Fatalf("unexpected sqlite new-only card: %+v", newCard)
+	}
+
+	// 2. Due Only serves due card 301 and reports RemainingNew=0
+	dueCard, err := SQLiteFetchNextCardWithOptions(dbPath, "Default", nil, nil, "due")
+	if err != nil {
+		t.Fatalf("sqlite due mode: %v", err)
+	}
+	if dueCard.CardID != 301 || !dueCard.IsDue || dueCard.RemainingDue != 1 || dueCard.RemainingNew != 0 || dueCard.TotalRemaining != 1 {
+		t.Fatalf("unexpected sqlite due-only card: %+v", dueCard)
+	}
+
+	// 3. Both reports 1 due + 1 new = 2 total
+	bothCard, err := SQLiteFetchNextCardWithOptions(dbPath, "Default", nil, nil, "both")
+	if err != nil {
+		t.Fatalf("sqlite both mode: %v", err)
+	}
+	if bothCard.CardID != 301 || bothCard.RemainingDue != 1 || bothCard.RemainingNew != 1 || bothCard.TotalRemaining != 2 {
+		t.Fatalf("unexpected sqlite both-mode card: %+v", bothCard)
+	}
+
+	// 4. After answering due card 301, Due Only returns TotalRemaining=0 (does NOT spill into new card 302!)
+	if err := SQLiteAnswerCard(dbPath, 301, 3); err != nil {
+		t.Fatalf("answer 301: %v", err)
+	}
+	doneDue, err := SQLiteFetchNextCardWithOptions(dbPath, "Default", nil, nil, "due")
+	if err != nil {
+		t.Fatalf("sqlite due mode after finish: %v", err)
+	}
+	if doneDue.CardID != 0 || doneDue.TotalRemaining != 0 || doneDue.RemainingDue != 0 || doneDue.RemainingNew != 0 {
+		t.Fatalf("expected empty card in due-only mode after finishing due cards, got %+v", doneDue)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(substr) == 0 || (len(s) >= len(substr) && indexString(s, substr) >= 0)
 }

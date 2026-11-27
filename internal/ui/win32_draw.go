@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"anki-passive-widget/internal/app"
+	"anki-passive-widget/internal/config"
 )
 
 type lineAtom struct {
@@ -66,7 +67,8 @@ func (w *WidgetWindow) renderToHDC(hwnd, hdc uintptr) {
 	defer func() { _, _, _ = procSelectObject.Call(memDC, oldBmp) }()
 
 	pal := w.palette()
-	canvas := newPixelCanvas(int(cw), int(ch))
+	w.mainCanvas = ensurePixelCanvas(w.mainCanvas, int(cw), int(ch))
+	canvas := w.mainCanvas
 	canvas.clear(pal.CanvasBg)
 
 	w.hits = w.hits[:0]
@@ -155,10 +157,113 @@ func (w *WidgetWindow) renderToHDC(hwnd, hdc uintptr) {
 		pillPadX := w.dp(8)
 		tw, _ := measureTextSize(memDC, w.fontTiny, titleTxt)
 		maxPillW := rightX - w.dp(14)
-		showProg := w.card != nil && w.card.CardID > 0 && rightX > w.dp(210)
-		if showProg {
-			maxPillW = rightX - w.dp(106)
+		showProg := w.card != nil && w.card.CardID > 0 && rightX > w.dp(190)
+
+		type progPart struct {
+			txt string
+			col uint32
+			w   int32
 		}
+		studyMode := w.cfg.StudyMode
+		if studyMode == "" {
+			studyMode = config.StudyModeBoth
+		}
+		var (
+			barW       int32
+			parts      []progPart
+			partGap    int32
+			lblTotalW  int32
+			remDue     int
+			remNew     int
+			initDue    int
+			initNew    int
+			dueRatio   float64
+			newRatio   float64
+		)
+		if showProg {
+			remDue = w.card.RemainingDue
+			remNew = w.card.RemainingNew
+			initDue = w.progress.InitialDue
+			if remDue > initDue {
+				initDue = remDue
+			}
+			initNew = w.progress.InitialNew
+			if remNew > initNew {
+				initNew = remNew
+			}
+			if initDue > 0 {
+				dueRatio = float64(initDue-remDue) / float64(initDue)
+			}
+			if initNew > 0 {
+				newRatio = float64(initNew-remNew) / float64(initNew)
+			}
+
+			measureParts := func(items []progPart, gap int32) ([]progPart, int32) {
+				var total int32
+				for i := range items {
+					pw, _ := measureTextSize(memDC, w.fontTiny, items[i].txt)
+					items[i].w = pw
+					total += pw
+					if i > 0 {
+						total += gap
+					}
+				}
+				return items, total
+			}
+
+			switch studyMode {
+			case config.StudyModeDue:
+				barW = w.dp(36)
+				partGap = 0
+				parts, lblTotalW = measureParts([]progPart{
+					{txt: fmt.Sprintf("%d due", remDue), col: pal.ProgressDueFg.win32()},
+				}, 0)
+			case config.StudyModeNew:
+				barW = w.dp(36)
+				partGap = 0
+				parts, lblTotalW = measureParts([]progPart{
+					{txt: fmt.Sprintf("%d new", remNew), col: pal.ProgressNewFg.win32()},
+				}, 0)
+			default: // StudyModeBoth (Due + New)
+				barW = w.dp(42)
+				if remDue > 0 && remNew > 0 {
+					fullParts, fullW := measureParts([]progPart{
+						{txt: fmt.Sprintf("%d due", remDue), col: pal.ProgressDueFg.win32()},
+						{txt: fmt.Sprintf("%d new", remNew), col: pal.ProgressNewFg.win32()},
+					}, w.dp(6))
+					needFull := w.dp(8) + barW + w.dp(6) + fullW + w.dp(4)
+					if rightX-w.dp(10)-needFull >= w.dp(56) {
+						parts = fullParts
+						partGap = w.dp(6)
+						lblTotalW = fullW
+					} else {
+						partGap = w.dp(4)
+						parts, lblTotalW = measureParts([]progPart{
+							{txt: fmt.Sprintf("%dd", remDue), col: pal.ProgressDueFg.win32()},
+							{txt: fmt.Sprintf("%dn", remNew), col: pal.ProgressNewFg.win32()},
+						}, partGap)
+					}
+				} else if remDue > 0 {
+					partGap = 0
+					parts, lblTotalW = measureParts([]progPart{
+						{txt: fmt.Sprintf("%d due", remDue), col: pal.ProgressDueFg.win32()},
+					}, 0)
+				} else {
+					partGap = 0
+					parts, lblTotalW = measureParts([]progPart{
+						{txt: fmt.Sprintf("%d new", remNew), col: pal.ProgressNewFg.win32()},
+					}, 0)
+				}
+			}
+
+			progTotalW := w.dp(8) + barW + w.dp(6) + lblTotalW + w.dp(4)
+			if rightX-w.dp(10)-progTotalW >= w.dp(44) {
+				maxPillW = rightX - w.dp(10) - progTotalW
+			} else {
+				showProg = false
+			}
+		}
+
 		pillW := tw + pillPadX*2
 		if pillW > maxPillW {
 			pillW = maxPillW
@@ -176,37 +281,54 @@ func (w *WidgetWindow) renderToHDC(hwnd, hdc uintptr) {
 
 			if showProg {
 				barX := pillRc.Right + w.dp(8)
-				barW := w.dp(36)
-				if barX+barW+w.dp(46) <= rightX {
-					barH := w.dp(4)
-					barY := (headerH - barH) / 2
-					barRc := rect{Left: barX, Top: barY, Right: barX + barW, Bottom: barY + barH}
-					canvas.drawRoundedBox(barRc, float64(barH)/2.0, pal.ProgressTrack, pal.ProgressTrack, false)
-					rem := w.card.TotalRemaining
-					initTot := w.progress.InitialTotal
-					if rem > initTot {
-						initTot = rem
-					}
-					if initTot > 0 && initTot > rem {
-						fillW := (barW * int32(initTot-rem)) / int32(initTot)
-						if fillW > 0 {
-							if fillW < barH {
-								fillW = barH
-							}
-							canvas.drawRoundedBox(rect{Left: barX, Top: barY, Right: barX + fillW, Bottom: barY + barH}, float64(barH)/2.0, pal.ProgressFill, pal.ProgressFill, false)
+				barH := w.dp(5)
+				barY := (headerH - barH) / 2
+				barRc := rect{Left: barX, Top: barY, Right: barX + barW, Bottom: barY + barH}
+				switch studyMode {
+				case config.StudyModeDue:
+					canvas.drawSingleProgressBar(barRc, pal.ProgressDueTrack, pal.ProgressDueFill, dueRatio)
+				case config.StudyModeNew:
+					canvas.drawSingleProgressBar(barRc, pal.ProgressNewTrack, pal.ProgressNewFill, newRatio)
+				default:
+					if initDue > 0 && initNew > 0 {
+						splitRatio := float64(initDue) / float64(initDue+initNew)
+						if splitRatio < 0.25 {
+							splitRatio = 0.25
+						} else if splitRatio > 0.75 {
+							splitRatio = 0.75
 						}
+						canvas.drawDualProgressBar(
+							barRc, splitRatio,
+							pal.ProgressDueTrack, pal.ProgressDueFill, dueRatio,
+							pal.ProgressNewTrack, pal.ProgressNewFill, newRatio,
+							pal.CanvasBg,
+						)
+					} else if initDue > 0 {
+						canvas.drawSingleProgressBar(barRc, pal.ProgressDueTrack, pal.ProgressDueFill, dueRatio)
+					} else {
+						canvas.drawSingleProgressBar(barRc, pal.ProgressNewTrack, pal.ProgressNewFill, newRatio)
 					}
-					cntTxt := fmt.Sprintf("%d new", w.card.RemainingNew)
-					if w.card.RemainingDue > 0 {
-						cntTxt = fmt.Sprintf("%d due", w.card.RemainingDue)
+				}
+
+				tx := barRc.Right + w.dp(6)
+				for i, part := range parts {
+					if i > 0 {
+						tx += partGap
 					}
-					texts = append(texts, textCmd{
-						font:  w.fontTiny,
-						txt:   cntTxt,
-						rc:    rect{Left: barX + barW + w.dp(6), Top: 0, Right: rightX - w.dp(4), Bottom: headerH},
-						color: pal.TextMuted.win32(),
-						flags: dtLeft | dtVCenter | dtSingleLine,
-					})
+					rEdge := tx + part.w + w.dp(2)
+					if rEdge > rightX-w.dp(2) {
+						rEdge = rightX - w.dp(2)
+					}
+					if tx < rEdge {
+						texts = append(texts, textCmd{
+							font:  w.fontTiny,
+							txt:   part.txt,
+							rc:    rect{Left: tx, Top: 0, Right: rEdge, Bottom: headerH},
+							color: part.col,
+							flags: dtLeft | dtVCenter | dtSingleLine,
+						})
+					}
+					tx += part.w
 				}
 			}
 		}
@@ -379,6 +501,13 @@ func (w *WidgetWindow) renderReview(c *pixelCanvas, memDC uintptr, cr rect, head
 
 	// All Caught Up State
 	if w.card.TotalRemaining == 0 {
+		emptySubtitle := "No due or new cards remaining."
+		switch w.cfg.StudyMode {
+		case config.StudyModeDue:
+			emptySubtitle = "No due cards remaining."
+		case config.StudyModeNew:
+			emptySubtitle = "No new cards remaining."
+		}
 		cardRc := rect{Left: padX, Top: headerH + w.dp(2), Right: cw - padX, Bottom: ch - w.dp(54)}
 		c.drawRoundedBox(cardRc, float64(w.dp(10)), pal.Surface, pal.Border, true)
 		c.drawLucideIcon("circle-check", (cw-w.dp(26))/2, cardRc.Top+w.dp(22), w.dp(26), pal.SuccessFg)
@@ -392,7 +521,7 @@ func (w *WidgetWindow) renderReview(c *pixelCanvas, memDC uintptr, cr rect, head
 			},
 			textCmd{
 				font:  w.fontTiny,
-				txt:   "No due or new cards remaining.",
+				txt:   emptySubtitle,
 				rc:    rect{Left: cardRc.Left + w.dp(12), Top: cardRc.Top + w.dp(80), Right: cardRc.Right - w.dp(12), Bottom: cardRc.Bottom - w.dp(10)},
 				color: pal.TextMuted.win32(),
 				flags: dtCenter | dtSingleLine,

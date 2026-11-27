@@ -43,10 +43,16 @@ type ThemePalette struct {
 	SecondaryHover rgba
 	SecondaryFg    rgba
 
-	ProgressTrack rgba
-	ProgressFill  rgba
-	AutoHideFill  rgba
-	AutoHidePause rgba
+	ProgressTrack    rgba
+	ProgressFill     rgba
+	ProgressDueTrack rgba
+	ProgressDueFill  rgba
+	ProgressDueFg    rgba
+	ProgressNewTrack rgba
+	ProgressNewFill  rgba
+	ProgressNewFg    rgba
+	AutoHideFill     rgba
+	AutoHidePause    rgba
 
 	ChipFrontBg  rgba
 	ChipFrontBdr rgba
@@ -108,10 +114,16 @@ var lightPalette = ThemePalette{
 	SecondaryHover: cRGB(244, 244, 245),
 	SecondaryFg:    cRGB(39, 39, 42),
 
-	ProgressTrack: cRGB(229, 231, 235),
-	ProgressFill:  cRGB(16, 185, 129),
-	AutoHideFill:  cRGB(24, 24, 27),
-	AutoHidePause: cRGB(217, 119, 6),
+	ProgressTrack:    cRGB(229, 231, 235),
+	ProgressFill:     cRGB(16, 185, 129),
+	ProgressDueTrack: cRGB(209, 250, 229),
+	ProgressDueFill:  cRGB(16, 185, 129),
+	ProgressDueFg:    cRGB(4, 120, 87),
+	ProgressNewTrack: cRGB(219, 234, 254),
+	ProgressNewFill:  cRGB(59, 130, 246),
+	ProgressNewFg:    cRGB(29, 78, 216),
+	AutoHideFill:     cRGB(24, 24, 27),
+	AutoHidePause:    cRGB(217, 119, 6),
 
 	ChipFrontBg:  cRGB(239, 246, 255),
 	ChipFrontBdr: cRGB(191, 219, 254),
@@ -173,10 +185,16 @@ var darkPalette = ThemePalette{
 	SecondaryHover: cRGB(39, 39, 44),
 	SecondaryFg:    cRGB(228, 228, 231),
 
-	ProgressTrack: cRGB(39, 39, 44),
-	ProgressFill:  cRGB(52, 211, 153),
-	AutoHideFill:  cRGB(228, 228, 231),
-	AutoHidePause: cRGB(251, 191, 36),
+	ProgressTrack:    cRGB(39, 39, 44),
+	ProgressFill:     cRGB(52, 211, 153),
+	ProgressDueTrack: cRGB(20, 62, 49),
+	ProgressDueFill:  cRGB(52, 211, 153),
+	ProgressDueFg:    cRGB(110, 231, 183),
+	ProgressNewTrack: cRGB(26, 46, 76),
+	ProgressNewFill:  cRGB(96, 165, 250),
+	ProgressNewFg:    cRGB(147, 197, 253),
+	AutoHideFill:     cRGB(228, 228, 231),
+	AutoHidePause:    cRGB(251, 191, 36),
 
 	ChipFrontBg:  cRGB(30, 41, 59),
 	ChipFrontBdr: cRGB(59, 130, 246),

@@ -39,6 +39,7 @@ var (
 	procSetTimer                      = user32DLL.NewProc("SetTimer")
 	procKillTimer                     = user32DLL.NewProc("KillTimer")
 	procTrackMouseEvent               = user32DLL.NewProc("TrackMouseEvent")
+	procSetCapture                    = user32DLL.NewProc("SetCapture")
 	procReleaseCapture                = user32DLL.NewProc("ReleaseCapture")
 	procMonitorFromWindow             = user32DLL.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW               = user32DLL.NewProc("GetMonitorInfoW")
@@ -116,8 +117,9 @@ const (
 	wmMouseMove   = 0x0200
 	wmLButtonDown = 0x0201
 	wmLButtonUp   = 0x0202
-	wmMouseWheel  = 0x020A
-	wmMouseLeave  = 0x02A3
+	wmMouseWheel     = 0x020A
+	wmCaptureChanged = 0x0215
+	wmMouseLeave     = 0x02A3
 	wmApp         = 0x8000
 
 	htClient  = 1
